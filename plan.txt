@@ -1,0 +1,790 @@
+OLX Monitor v2 – Plan Architektoniczny (Wersja Finalna)
+Context
+Obecna architektura ma krytyczne błędy strukturalne: mediana liczona niezależnie w 3 miejscach, stale deal.marketMedian, luźna kategoryzacja (2GB iPhone w grupie iPhone 17), minPrice użytkownika zmienia dataset OLX, brak walidacji logicznej, dashboard oblicza własne dane zamiast korzystać z backendu.
+
+Cel v2: jeden pipeline normalizacji → jedna klasa eligibility → jedno źródło statystyk (MarketSnapshot). Wszystkie sekcje systemu korzystają z identycznych danych. Dashboard nie oblicza nic po swojemu.
+
+ZASADY ARCHITEKTONICZNE (STABLE CORE)
+Poniższe reguły są nienaruszalnymi kontraktami systemu:
+
+minPrice użytkownika NIGDY nie trafia do budowy mediany rynku. minPrice = filtr UI.
+Wszystkie sekcje korzystają z jednego MarketSnapshot – nie liczą median samodzielnie.
+configKey opisuje wyłącznie konfigurację sprzętową. Condition NIE jest częścią configKey.
+Klucz snapshotu = ${configKey}:${condition} – jedyny format, wszędzie identyczny.
+Backend jest jedynym arbitrem configKey i statystyk rynku. Dashboard nic nie oblicza.
+Każdy listing ma jednoznaczną eligibility: market_eligible, visible_only lub rejected.
+Tylko market_eligible buduje medianę i może generować deale/powiadomienia.
+AI/analyzer NIE wpływa na configKey, klasyfikację wariantu, medianę ani snapshoty.
+monitorRules jest jedynym źródłem reguł monitoringu w runtime.
+Scheduler resolved monitora używa buildSearchQuery(configKey), nie raw query użytkownika.
+Snapshoty są zawsze kluczowane przez configKey:condition, nie przez arbitralne query.
+cheapestVisible (visible_only) NIE jest danymi rynkowymi – nie może być używany do: liczenia okazji, wyliczania % od mediany, CTA "świetna okazja" ani do "najtańszych ofert rynkowych".
+Etap 1 – Nowe modele danych (src/types.ts)
+1A. ListingEligibility
+
+// STABLE CORE – listing eligibility contract
+export type ListingEligibility =
+  | 'market_eligible'   // buduje medianę; może generować deale i powiadomienia
+  | 'visible_only'      // widoczne pomocniczo w UI; NIE buduje mediany; NIE generuje deali
+  | 'rejected';         // całkowicie poza systemem; niewidoczne
+Zasady klasyfikacji rejected – gdy GŁÓWNYM przedmiotem oferty jest:
+
+Akcesorium (etui, case, folia, kabel, ładowarka, szkło ochronne) – rozpoznawane po: tytule zaczynającym się od nazwy akcesorium LUB kategorii OLX = "Akcesoria/Etui/Kable"
+Usługa / naprawa / serwis
+„Na części", „nie działa", „uszkodzone" (główny przedmiot = uszkodzony sprzęt)
+Ogłoszenie niemające związku z urządzeniem
+Model fizycznie niemożliwy
+Reguła device+bonus: Listing „iPhone 17 256GB + etui gratis" NIE jest rejected. Gdy akcesorium to DODATEK (słowa: „gratis", „w zestawie", „w komplecie", „w pudełku"), a głównym produktem jest urządzenie → listing dostaje flagę accessory_bonus i przechodzi pełną walidację jak każdy inny listing. Jego końcowa eligibility może być market_eligible albo visible_only zależnie od pozostałych reguł (confidence, requiredForConfigKey etc.). Flaga accessory_bonus jest WYŁĄCZNIE informacyjna – nie ratuje listingu do market_eligible ani nie obniża confidence.
+
+Zasady klasyfikacji visible_only – urządzenie poprawne, ale niewystarczające do mediany:
+
+parsingConfidence < 0.6
+Brak któregokolwiek pola z requiredForConfigKey adaptera
+Bundle (kilka urządzeń razem)
+Cena = 0 lub brak ceny
+Parametry OLX sprzeczne z tytułem
+Brak adaptera (nieznana kategoria produktu) – trafia do visible_only, nie do żadnej grupy
+variant_ambiguous flag + adapter zdecydował, że niepewność wyklucza market_eligible
+market_eligible – pełne uczestnictwo:
+
+confidence ≥ 0.6, wszystkie requiredForConfigKey wypełnione, brak hard_reject flag
+1B. VariantCertainty – ważna reguła dla wariantów iPhone
+
+// Dwa różne powody braku wariantu – muszą być rozróżnione:
+export type VariantCertainty =
+  | 'confirmed'    // wariant wykryty jednoznacznie (pro max, pro, air, plus, mini)
+  | 'base_model'   // brak wariantu = to faktycznie model bazowy (tytuł nie zawiera żadnego wariantu)
+  | 'ambiguous';   // parser widział sygnały wariantu ale nie mógł jednoznacznie rozstrzygnąć
+Reguła:
+
+variant_certainty = 'base_model' + variant = undefined → listing może być market_eligible dla configKey bez wariantu (np. apple_iphone_17_256gb)
+variant_certainty = 'ambiguous' + variant = undefined → listing jest visible_only (nie buduje żadnej grupy, bo nie wiadomo jakiego modelu dotyczy)
+max bez pro → variant_certainty = 'ambiguous', confidence -= 0.25, flags.push('variant_ambiguous')
+1C. ProductCondition i reguła ustalania stanu
+
+export type ProductCondition = 'new' | 'used' | 'unknown';
+
+// Hierarchia źródeł (malejący priorytet):
+// 1. olxParams['state'] lub olxParams['condition'] → 'new'/'used' (najbardziej wiarygodne)
+// 2. Tytuł: „nowy", „nowe", „NEW", „fabrycznie nowy", „zapakowany" → 'new'
+// 3. Tytuł: „używany", „używana", „second hand", „po naprawie" → 'used'
+// 4. Brak sygnałów → 'unknown'
+Reguła snapshotu per condition:
+
+'new' → wchodzi do snapshotu condition='new' i condition='all'
+'used' → wchodzi do snapshotu condition='used' i condition='all'
+'unknown' → wchodzi TYLKO do snapshotu condition='all'
+Reguła deal detection + condition:
+
+Listing condition='unknown' może generować deale TYLKO dla monitora z condition='all'
+Listing condition='unknown' NIE może generować deali dla monitora condition='new' ani condition='used'
+1D. NormalizedListing
+
+// STABLE CORE – NormalizedListing contract
+export interface NormalizedListing {
+  // Raw (z OLX API)
+  id: string; url: string; title: string; price: number; priceText: string;
+  location: string; postedAt: string; imageUrl?: string; description?: string;
+  olxCategory?: string;
+
+  // Produktowe (z adaptera)
+  brand?: string; model?: string; variant?: string; storage?: string;
+  ram?: string; chip?: string; screenSize?: string; color?: string;
+  condition: ProductCondition;
+  variantCertainty?: VariantCertainty;
+  configKey?: string;
+
+  // Pre-market validation (bez snapshotu)
+  parsingConfidence: number;          // 0.0–1.0
+  eligibility: ListingEligibility;
+  validationFlags: string[];          // ram_implausible, variant_ambiguous, accessory_bonus, ...
+  isBundle: boolean;
+  isAccessory: boolean;               // title + description + olxCategory
+
+  // Post-market flags (uzupełniane przez market-scanner PO obliczeniu mediany)
+  isSuspiciousPrice?: boolean;        // price < 50% snapshot.stats.median
+}
+1E. ProductVariant
+
+export interface ProductVariant {
+  configKey: string;
+  label: string;          // "iPhone 17 Pro Max 256GB"
+  brand: string; model: string; variant?: string;
+  storage?: string; ram?: string; chip?: string; screenSize?: string;
+  keywords: string[];
+  searchQuery: string;    // canonical query dla targeted fetch
+}
+1F. MarketSnapshot
+
+// STABLE CORE – MarketSnapshot contract
+// Klucz ZAWSZE = snapshotKey = `${configKey}:${condition}`
+export interface MarketSnapshotStats {
+  min: number; p10: number; p25: number; median: number;
+  avg: number; p75: number; p90: number; max: number;
+}
+
+export interface MarketSnapshot {
+  configKey: string;
+  condition: 'new' | 'used' | 'all';
+  snapshotKey: string;           // `${configKey}:${condition}` – STABLE
+  computedAt: string; label: string; keywords: string[];
+
+  rawCount: number; rejectedCount: number;
+  visibleOnlyCount: number; marketEligibleCount: number; outlierRemovedCount: number;
+
+  stats: MarketSnapshotStats;    // TYLKO z market_eligible po IQR
+
+  // cheapestEligible: dane rynkowe – mogą być używane do okazji i % od mediany
+  cheapestEligible: NormalizedListing[];  // top 10 market_eligible (z isSuspiciousPrice)
+
+  // cheapestVisible: WYŁĄCZNIE diagnostyczne
+  // NIE do: okazji, % od mediany, "najtańszych ofert rynkowych", CTA "świetna okazja"
+  // Widoczne w UI z etykietą "niepotwierdzona konfiguracja / mniej wiarygodne"
+  cheapestVisible: NormalizedListing[];   // top 5 visible_only (osobna sekcja)
+
+  histogram: { from: number; to: number; count: number }[];
+
+  // dataConfidence – wieloczynnikowa (nie tylko liczba listingów):
+  // CZYNNIKI OBNIŻAJĄCE:
+  // - marketEligibleCount < 5 → degraduj do 'low'
+  // - visible_only / total > 60% → degraduj
+  // - rejected / total > 80% → degraduj (zbyt wiele odrzutów = query zbyt szerokie lub nieprecyzyjne)
+  // - średni parsingConfidence eligible listingów < 0.75 → degraduj
+  // - targeted fetch <3 wyników lub brak → degraduj
+  // - p75/p25 > 2.5x (zbyt duży spread) → degraduj
+  // 'high': marketEligibleCount ≥20 + brak czynników obniżających
+  // 'medium': 5–19 lub jeden czynnik obniżający
+  // 'low': <5 lub wiele czynników obniżających
+  dataConfidence: 'high' | 'medium' | 'low';
+
+  rejectionReasons: Record<string, number>;  // { accessory: 12, service: 3, ... }
+  targetedFetchUsed: boolean;
+  targetedFetchCount?: number;
+}
+1G. Rozszerz Deal
+
+marketMedianAtDiscovery?: number;  // IMMUTABLE – mediana gdy znaleziono deal
+marketMedianAtPurchase?: number;   // IMMUTABLE – mediana gdy kupiono (ustawiana przy statusie 'purchased')
+liveMarketMedian?: number;         // przeliczane przy GET, nie zapisywane na dysku
+liveDiscount?: number;
+liveQuality?: DealQuality;
+liveDataConfidence?: 'high' | 'medium' | 'low' | 'no_data';
+// Zachowaj stare pola: marketMedian, dealScore, dealQuality (backward compat)
+1H. Rozszerz MonitoredItem
+
+configKey?: string;
+monitorStatus: 'resolved' | 'unresolved' | 'legacy';
+// resolved   = ma configKey, pochodzi z flow Rynek → "+ Monitoruj"
+// unresolved = ręcznie dodany, bez configKey; może być upgraded do resolved
+// legacy     = v1, bez configKey, migrowany do monitorRules
+
+monitorRules: {
+  budgetMode?: { maxPrice: number };
+  marketMode?: { minDiscountPct: number };
+  triggerLogic: 'any' | 'all';
+  // triggerLogic ma znaczenie TYLKO gdy oba tryby (budgetMode + marketMode) aktywne jednocześnie
+  // jeśli aktywny tylko jeden tryb → triggerLogic ignorowane, spełnienie = aktywny tryb spełniony
+};
+
+// REGUŁA MIGRACJI: monitorRules = jedyne źródło w runtime
+// Stare pola (maxPrice, minPrice, minDealQuality) → mapowane do monitorRules przy loadItems()
+// Nowa logika NIGDY nie czyta starych pól bezpośrednio
+
+suggestedConfigKey?: string | null;        // propozycja od schedulera (F4) – null po przyjęciu/odrzuceniu
+suggestedConfigKeyLabel?: string | null;   // human-readable label dla bannera UI (F4)
+
+// ŚCIEŻKA PROMOTED (legacy/unresolved → resolved):
+// Użytkownik może "przypisać wariant" do monitora:
+//   PUT /api/items/{id} z { configKey, monitorStatus: 'resolved' }
+// Po przypisaniu: scheduler używa buildSearchQuery(configKey), nie raw searchQuery
+// Przycisk "Przypisz do wariantu" w UI: otwiera Rynek → wybór wariantu → przypisanie
+Etap 2 – Category Adapters (src/normalizer/)
+base-adapter.ts
+
+export interface AdapterInput {
+  title: string;
+  description?: string;
+  olxParams: Record<string, string>;
+  olxCategory?: string;
+  price: number;                      // pomocniczo jako sygnał walidacji
+}
+
+// Typ techniczny normalizer/ – nie część publicznego kontraktu aplikacji
+// NormalizedListing = kontrakt publiczny (STABLE CORE); AdapterNormalizationResult = techniczny
+// Eksportowany wewnątrz normalizer/ (potrzebny przez adaptery i validation.ts),
+// ale NIE re-eksportowany z normalizer/index.ts na zewnątrz modułu
+export interface AdapterNormalizationResult {
+  fields: Partial<NormalizedListing>;             // pola produktowe dla NormalizedListing
+  penalties: { flag: string; delta: number }[];   // penalty dla validateNormalized
+}
+
+export type FieldRole = 'config_key' | 'price_driver' | 'confidence_only' | 'display_only';
+
+// STABLE CORE – BaseAdapter contract
+export interface BaseAdapter {
+  readonly name: string;
+  readonly fieldRoles: Record<string, FieldRole>;
+  readonly requiredForConfigKey: string[];               // brak któregoś → configKey = undefined
+
+  canHandle(input: AdapterInput): boolean;               // title + olxParams + olxCategory
+  normalize(input: AdapterInput): AdapterNormalizationResult; // zwraca fields + penalties
+  buildConfigKey(fields: Partial<NormalizedListing>): string | undefined; // TYLKO 'config_key' pola
+  buildSearchQuery(configKey: string): string;
+}
+validation.ts
+Kanoniczna sygnatura (finalna – zgodna z F2 + F7):
+
+
+// KROK 1–6 używa fields (z AdapterNormalizationResult), penalties, adapter, isBundle
+export function validateNormalized(
+  fields: Partial<NormalizedListing>,
+  penalties: { flag: string; delta: number }[],
+  input: AdapterInput,
+  adapter: BaseAdapter,
+  isBundle: boolean,       // przekazywane jawnie z normalizeListing(), nie z partial
+): ValidationResult {
+  // KROK 1: Hard reject (title + description + olxCategory)
+  if (isMainProductAccessory(input)) return reject('accessory');
+  if (isServiceListing(input))       return reject('service');
+  if (isDamagedForParts(input))      return reject('parts_only');
+  if (isImpossibleModel(fields))     return reject('impossible_model');
+
+  // KROK 2: Confidence + flags z penalties adaptera
+  let confidence = 1.0;
+  const flags: string[] = [];
+  for (const p of penalties) { confidence += p.delta; flags.push(p.flag); }
+  // accessory_bonus: jeśli w penalties → dodaj do flags informacyjnie, NIE obniża confidence
+
+  // KROK 3: requiredForConfigKey
+  const missing = adapter.requiredForConfigKey.filter(f => !fields[f as keyof NormalizedListing]);
+  if (missing.length > 0) {
+    flags.push('incomplete_config');
+    return { eligibility: 'visible_only', confidence, flags };
+  }
+
+  // KROK 4: VariantCertainty
+  if (fields.variantCertainty === 'ambiguous') {
+    return { eligibility: 'visible_only', confidence, flags: [...flags, 'variant_ambiguous'] };
+  }
+
+  // KROK 5: Bundle (jawne przekazanie, nie z partial)
+  if (isBundle) return { eligibility: 'visible_only', confidence, flags: [...flags, 'bundle'] };
+
+  // KROK 6: Confidence threshold
+  if (confidence < 0.6) return { eligibility: 'visible_only', confidence, flags };
+
+  return { eligibility: 'market_eligible', confidence, flags };
+}
+adapters/iphone.ts – kluczowe reguły
+fieldRoles:
+
+
+model    → config_key
+variant  → config_key
+storage  → config_key
+ram      → confidence_only
+color    → display_only
+Priorytet wariantu (absolutna kolejność):
+
+pro max (oba słowa) → variant='pro_max', variantCertainty='confirmed'
+pro (bez max) → variant='pro', variantCertainty='confirmed'
+air (tylko iPhone) → variant='air', variantCertainty='confirmed'
+plus → variant='plus', variantCertainty='confirmed'
+mini → variant='mini', variantCertainty='confirmed'
+max bez pro → variant=undefined, variantCertainty='ambiguous', confidence -= 0.25
+Żaden z powyższych → variant=undefined, variantCertainty='base_model'
+base_model (wariant=undefined, certainty=base_model) → może być market_eligible dla configKey bez wariantu (np. apple_iphone_17_256gb)
+ambiguous (wariant=undefined, certainty=ambiguous) → zawsze visible_only
+
+RAM validation:
+
+iphone_15/16/17 → min 6GB; naruszenie → confidence -= 0.35, ram_implausible
+iphone_11/12/13/14 → min 4GB; naruszenie → confidence -= 0.35, ram_implausible
+iphone_6/7/8/x → max 3GB; naruszenie → confidence -= 0.20, ram_implausible
+Legalne storage: [64, 128, 256, 512, 1024] GB. Inne → confidence -= 0.30, storage_implausible
+requiredForConfigKey: ['model', 'storage']
+configKey: apple_iphone_{model}_{variant}_{storage} (variant pomijany gdy base_model)
+
+adapters/macbook.ts
+Twarda reguła: Jeśli którekolwiek pole config_key nierozpoznane z pewnością → visible_only max (nie buduje mediany z niepełnej konfiguracji).
+
+fieldRoles: model, chip, screenSize, ram, storage → config_key; color → display_only
+requiredForConfigKey: ['model', 'chip', 'ram', 'storage']
+Legalne RAM: [8, 16, 24, 32, 48, 64, 96, 128, 192] GB; inne → confidence -= 0.40
+Legalne SSD: [256, 512, 1024, 2048, 4096] GB; inne → confidence -= 0.40
+configKey: apple_macbook_{model}_{chip}_{screen}_{ram}_{storage}
+
+Etap 3 – Normalizer Pipeline (src/normalizer/index.ts)
+
+// STABLE CORE – single normalization pipeline
+export function normalizeListing(raw: OlxRawListing): NormalizedListing {
+  const input: AdapterInput = {
+    title: raw.title, description: raw.description,
+    olxParams: raw.params, olxCategory: raw.category, price: raw.price,
+  };
+
+  // isAccessory i isBundle: title + description + olxCategory (nie tylko title)
+  if (isMainProductAccessory(input)) {
+    return { ...rawToBase(raw), eligibility: 'rejected', isAccessory: true, isBundle: false,
+      parsingConfidence: 0, validationFlags: ['accessory'], configKey: undefined, condition: 'unknown' };
+  }
+
+  const adapter = ADAPTERS.find(a => a.canHandle(input)) ?? null;
+  if (!adapter) {
+    // Nieznana kategoria → visible_only, NIE wyświetlana jako wariant w Rynku
+    return { ...rawToBase(raw), eligibility: 'visible_only', isAccessory: false,
+      isBundle: detectBundle(input), parsingConfidence: 0.1,
+      validationFlags: ['no_adapter'], configKey: undefined, condition: determineCondition(input) };
+  }
+
+  // Finalny flow zgodny z F2 + F7:
+  const { fields, penalties } = adapter.normalize(input);  // AdapterNormalizationResult
+  const isBundle = detectBundle(input);                    // PRZED validateNormalized
+  const { eligibility, confidence, flags } = validateNormalized(fields, penalties, input, adapter, isBundle);
+  const configKey = (eligibility !== 'rejected') ? adapter.buildConfigKey(fields) : undefined;
+
+  return {
+    ...rawToBase(raw), ...fields, configKey,
+    parsingConfidence: confidence, eligibility,
+    isAccessory: false, isBundle,
+    validationFlags: flags, condition: determineCondition(input),
+    // REGUŁA: adaptery NIE ustawiają condition – zawsze nadpisywane przez determineCondition(input)
+    // isSuspiciousPrice: BRAK tutaj – uzupełniane przez market-scanner po obliczeniu mediany
+  };
+}
+Etap 4 – Market Snapshot (src/market/)
+Dwa poziomy logiczne (architektoniczny podział – ważny)
+
+// POZIOM 1: Odkrycie wariantów po frazie (dla UI – zakładka Rynek)
+// Używa: broad fetch → normalizacja → grupowanie → computeVariantSnapshot per group
+discoverAndBuildSnapshots(query: string, condition: string): Promise<ScanResult>
+
+// POZIOM 2: Dedykowany snapshot dla konkretnego wariantu (dla schedulera i resolved monitorów)
+// Używa: buildSearchQuery(variant.configKey) → targeted fetch → normalizacja → stats
+// NIE używa broad query użytkownika
+computeVariantSnapshot(variant: ProductVariant, condition: string): Promise<MarketSnapshot>
+
+// computeSnapshot: łączy oba poziomy (wewnętrznie używa discoverAndBuildSnapshots)
+// Używany przez handleMarketScan()
+computeSnapshot(query: string, condition: string): Promise<ScanResult>
+Reguła implementacyjna:
+
+UI (Rynek): computeSnapshot(query, condition)
+Scheduler resolved monitor: computeVariantSnapshot(variant, condition) – NIE przez query
+Scheduler unresolved/legacy: discoverAndBuildSnapshots(searchQuery, condition) + próba resolved upgrade
+snapshot-store.ts – polityka odświeżania
+Snapshoty kluczowane ZAWSZE przez configKey:condition – nie przez query.
+
+Sytuacja	Akcja
+Snapshot nie istnieje	Synchroniczny fetch
+Świeży (<6h), confidence='high'	Cache bez odświeżania
+Świeży (<6h), confidence='low'	Cache + odśwież w tle (nie blokuje loopa)
+Przeterminowany (>6h), monitor aktywny	Synchronicznie
+Przeterminowany (>6h), monitor nieaktywny	W tle (nie blokuje)
+User wymusił refresh	Zawsze synchronicznie
+Odświeżanie w tle NIGDY nie blokuje: loopa schedulera, wykrywania deali, odpowiedzi API.
+
+Priorytety: (1) Aktywne resolved monitory → (2) Warianty z nowymi dealami (<24h) → (3) Ostatnio otwarte w UI (<1h) → (4) Lazy/reszta
+
+Etap 5 – handlers.ts
+5A. handleMarketScan()
+
+export async function handleMarketScan(query: string, condition: string, _minPrice = 0) {
+  // STABLE RULE: _minPrice IGNOROWANY – rynek zawsze od 0 zł
+  const { snapshots } = await computeSnapshot(query, condition);
+  return ok({ variants: snapshots.map(snap => ({
+    configKey: snap.configKey, label: snap.label,
+    sampleCount: snap.marketEligibleCount, stats: snap.stats,
+    cheapest: snap.cheapestEligible,
+    cheapestVisible: snap.cheapestVisible,  // oznaczone w UI jako "niepotwierdzona konfiguracja"
+    histogram: snap.histogram, keywords: snap.keywords, dataConfidence: snap.dataConfidence,
+    diagnostics: { raw: snap.rawCount, rejected: snap.rejectedCount, visibleOnly: snap.visibleOnlyCount },
+  })), totalFetched: snapshots.reduce((s, n) => s + n.rawCount, 0) });
+}
+5B. handlePriceAnalysis()
+
+export async function handlePriceAnalysis(query: string, condition: string, _minPrice = 0) {
+  // NIE używa minPrice – NIGDY
+  const { snapshots } = await computeSnapshot(query, condition);
+  if (!snapshots.length) return ok({ variants: [], message: 'Nie znaleziono wariantów' });
+
+  if (snapshots.length === 1) {
+    // Jeden wariant – zawsze zwróć z dataConfidence (nie udawaj pełnej pewności gdy low)
+    return ok({ variant: formatVariant(snapshots[0]!), variants: null,
+      requiresSelection: false, dataConfidence: snapshots[0]!.dataConfidence });
+  }
+  // Wiele wariantów → UI musi poprosić o wybór; NIE auto-selekcja
+  return ok({ variant: null, variants: snapshots.map(formatVariant),
+    requiresSelection: true, message: `Znaleziono ${snapshots.length} wariantów. Wybierz.` });
+}
+5C. handleGetDeals()
+
+export function handleGetDeals(): HandlerResult {
+  const itemsList = loadItems();
+  const deals = loadDeals().sort(byFoundAtDesc).map(deal => {
+    if (!deal.configKey) return { ...deal, liveDataConfidence: 'no_data' };
+    const condition = itemsList.find(i => i.id === deal.itemId)?.condition ?? 'all';
+    const snap = getSnapshot(deal.configKey, condition);
+    if (!snap) return { ...deal, liveMarketMedian: undefined, liveDataConfidence: 'no_data' };
+    const discount = (snap.stats.median - deal.listing.price) / snap.stats.median;
+    return { ...deal,
+      liveMarketMedian: snap.stats.median,
+      liveDiscount: Math.round(discount * 100),
+      liveQuality: classifyDiscount(discount),
+      liveDataConfidence: snap.dataConfidence,
+      // low/no_data → UI pokazuje wyraźne ostrzeżenie w karcie deala
+    };
+  });
+  return ok(deals);
+}
+5D. handleUpdateDeal() – zapis marketMedianAtPurchase
+
+if (updates.contactStatus === 'purchased') {
+  const condition = loadItems().find(i => i.id === deal.itemId)?.condition ?? 'all';
+  const snap = getSnapshot(deal.configKey ?? '', condition);
+  updates.marketMedianAtPurchase = snap?.stats.median ?? deal.liveMarketMedian ?? deal.marketMedian ?? 0;
+}
+Etap 6 – deal-detector.ts
+
+// TYLKO dla market_eligible listingów
+// visible_only i rejected NIE trafiają tutaj – hard guard
+export async function scoreDealFromNormalized(listing: NormalizedListing, condition: string): Promise<DealScore> {
+  if (listing.eligibility !== 'market_eligible') return noScore(listing);
+  // Reguła condition matching (STABLE – kanoniczna implementacja z F6):
+  const lc = listing.condition;
+  const mc = condition;
+  const conditionCompatible =
+    (lc === 'new'     && (mc === 'new'  || mc === 'all')) ||
+    (lc === 'used'    && (mc === 'used' || mc === 'all')) ||
+    (lc === 'unknown' &&  mc === 'all');  // unknown → TYLKO all
+  if (!conditionCompatible) return noScore(listing);
+  if (!listing.configKey) return noScore(listing);
+  const snap = getSnapshot(listing.configKey, condition);
+  if (!snap || snap.stats.median <= 0) return noScore(listing);
+  const discount = (snap.stats.median - listing.price) / snap.stats.median;
+  return { isNoScore: false, configKey: listing.configKey, marketMedian: snap.stats.median,
+    discount: Math.round(discount * 100), quality: classifyDiscount(discount),
+    p25: snap.stats.p25, p75: snap.stats.p75 };
+}
+
+// @deprecated – tylko legacy backward compat; NIE używany w nowym pipeline
+export async function scoreDeal(listing: OlxListing, condition: string): Promise<DealScore> { ... }
+Etap 7 – scheduler.ts
+
+async function checkItem(item: MonitoredItem): Promise<void> {
+  const rawListings = await scrapeListings(item);
+  const normalized = rawListings.map(normalizeListing);
+
+  // ONLY market_eligible generuje deale – visible_only i rejected ignorowane
+  const candidates = normalized.filter(l => l.eligibility === 'market_eligible');
+
+  for (const listing of candidates) {
+    if (dealExistsForListing(listing.id)) continue;
+    const score = await scoreDealFromNormalized(listing, item.condition);
+    // hasValidScore (zgodnie z F5): discount może być 0 lub ujemny – to nadal valid score
+    const hasValidScore = !score.isNoScore && score.marketMedian > 0;
+
+    // monitorRules: jedyne źródło reguł
+    const rules = item.monitorRules;
+    // budgetMode nie wymaga score – działa wyłącznie na cenie
+    const passesBudget = rules.budgetMode ? listing.price <= rules.budgetMode.maxPrice : false;
+    // marketMode WYMAGA valid score – bez snapshotu nie można ocenić okazji rynkowej
+    const passesMarket = hasValidScore && rules.marketMode
+      ? score.discount >= rules.marketMode.minDiscountPct
+      : false;
+
+    // triggerLogic ma znaczenie tylko gdy oba tryby aktywne jednocześnie
+    let passes: boolean;
+    if (rules.budgetMode && rules.marketMode) {
+      passes = rules.triggerLogic === 'all' ? (passesMarket && passesBudget) : (passesMarket || passesBudget);
+    } else {
+      passes = passesMarket || passesBudget;
+    }
+    // monitor tylko marketMode + brak snapshotu → passes=false → listing pominięty
+    // monitor tylko budgetMode + brak snapshotu → passes=passesBudget (score nieistotny)
+    if (!passes) continue;
+
+    const analysis = await analyzeListing(listing, score);
+    const deal = buildDeal(listing, score, analysis, item.id);
+    deal.marketMedianAtDiscovery = score.marketMedian;
+    upsertDeal(deal); notify(deal, item);
+  }
+}
+
+// Refresh snapshotów – priorytetowy, nie blokuje
+async function refreshSnapshots(): Promise<void> {
+  const activeItems = loadItems().filter(i => i.enabled);
+  for (const item of activeItems) {
+    if (item.monitorStatus === 'resolved' && item.configKey) {
+      // Resolved: używaj dedykowanego snapshotu po configKey
+      const snap = getSnapshot(item.configKey, item.condition);
+      if (!snap || isStale(snap) || snap.dataConfidence === 'low') {
+        const variant = buildVariantFromItem(item);
+        await computeVariantSnapshot(variant, item.condition); // targeted, nie broad
+      }
+    } else {
+      // Unresolved/legacy: broad scan by searchQuery, próba auto-resolve
+      // Snapshoty z tego toku: kluczowane po configKey:condition (nie po query)
+      const result = await discoverAndBuildSnapshots(item.searchQuery, item.condition);
+      // Jeśli znaleziono JEDEN wariant z high confidence → auto-propose resolved upgrade
+      // (nie auto-upgrade; wymaga potwierdzenia przez UI lub API call)
+      if (result.snapshots.length === 1 && result.snapshots[0]!.dataConfidence === 'high') {
+        item.suggestedConfigKey = result.snapshots[0]!.configKey;   // pole informacyjne
+        item.suggestedConfigKeyLabel = result.snapshots[0]!.label;  // human-readable label dla UI
+        upsertItem(item); // zapisz sugestię dla UI
+      }
+    }
+  }
+}
+// Uruchamiany co 6h jako OSOBNY cykl (setInterval), niezależny od checkItem().
+// refreshSnapshots() może używać sekwencyjnego await wewnętrznie – to nie blokuje checkItem(),
+// bo oba cykle działają niezależnie (oddzielne setInterval, nie wzajemnie blokujące).
+// Zasada: refreshSnapshots() NIE jest wywoływany wewnątrz checkItem() ani podczas obsługi requestu.
+Etap 8 – store.ts – migracja monitorRules + ścieżka promoted
+
+// Przy loadItems() – migracja legacy pól
+function migrateItem(item: MonitoredItem): MonitoredItem {
+  if (!item.monitorRules) {
+    item.monitorRules = {
+      budgetMode: item.maxPrice ? { maxPrice: item.maxPrice } : undefined,
+      marketMode: item.minDealQuality && item.minDealQuality !== 'normal'
+        ? { minDiscountPct: qualityToPercent(item.minDealQuality) } : undefined,
+      triggerLogic: 'any',
+    };
+  }
+  if (!item.monitorStatus) {
+    item.monitorStatus = item.configKey ? 'resolved' : 'legacy';
+  }
+  return item;
+}
+
+// Ścieżka promoted: legacy/unresolved → resolved
+// Trigger: PUT /api/items/{id} z { configKey, monitorStatus: 'resolved' }
+// UI: przycisk "Przypisz do wariantu" → otwiera Rynek → user wybiera wariant → PUT z configKey
+// Po resolved: scheduler używa computeVariantSnapshot(variant), nie broad scan
+Etap 9 – Dashboard HTML (4 zakładki)
+Kolejność: Rynek (domyślna) | Monitorowanie | Okazje | Portfolio | Weryfikacja iPhone
+Zasady UI (STABLE):
+Dashboard NIE oblicza median, NIE buduje configKey, NIE wybiera wariantów
+cheapestVisible wyświetlane OSOBNO z etykietą „niepotwierdzona konfiguracja / mniej wiarygodne"
+cheapestVisible NIE posiada przycisków okazji, NIE pokazuje % od mediany, NIE ma CTA "świetna okazja"
+Karty z liveDataConfidence: 'no_data'/'low' mają wyraźne wizualne ostrzeżenie
+Główny flow: Rynek → "+ Monitoruj"
+Ręczne dodawanie = tryb awaryjny/zaawansowany (ukryty za przyciskiem "Dodaj ręcznie"). Tworzy monitor unresolved. Użytkownik może go przypisać do wariantu przez "Przypisz do wariantu".
+
+Kluczowe fixes:
+analyzePrice(): NIE przekazuje minPrice do API.
+
+Deal card:
+
+
+const median = deal.liveMarketMedian ?? deal.marketMedian ?? 0;
+const savings = deal.liveDiscount ?? deal.dealScore ?? 0;
+const quality = deal.liveQuality ?? deal.dealQuality;
+const confidence = deal.liveDataConfidence ?? 'no_data';
+// confidence = 'no_data' | 'low' → wyraźne badge + zmieniony styl karty
+Portfolio:
+
+
+const medianRef = deal.marketMedianAtPurchase ?? deal.marketMedianAtDiscovery ?? 0;
+// zysk, ROI i oszczędność liczone od medianRef (nie bieżącej mediany)
+Etap 10 – analyzer.ts
+
+// Relative stable – minor interface update: przyjmuje NormalizedListing | OlxListing
+// STABLE RULE: analyzer NIE wpływa na configKey, wariant, medianę, snapshoty
+// Zakres: ryzyko, defekty, scam, sugestie wiadomości – i nic więcej
+Co zachować vs przebudować
+Plik	Status
+src/notifier.ts	STABLE – nie ruszać
+src/imei-checker.ts	STABLE – osobny moduł
+src/analyzer.ts	Relative stable – minor interface update
+src/config-parser.ts	Legacy fallback ONLY – nie używany w nowym pipeline
+src/price-cache.ts	Thin wrapper → snapshot-store (nie usuwa starego API)
+src/store.ts	Extend: migracja + snapshot storage
+Kolejność implementacji
+
+1.  types.ts                    – nowe interfejsy (nic nie usuwa, backward compat)
+2.  normalizer/base-adapter.ts + validation.ts
+3.  normalizer/adapters/        – iphone, macbook, gpu, console
+4.  normalizer/index.ts         – normalizeListing()
+5.  market/snapshot-store.ts    – persist + polityka odświeżania
+6.  market/market-scanner.ts    – computeSnapshot() + computeVariantSnapshot()
+7.  store.ts                    – migracja monitorRules + promoted path
+8.  handlers.ts                 – wszystkie endpointy
+9.  deal-detector.ts            – scoreDealFromNormalized()
+10. scheduler.ts                – nowy checkItem() + refreshSnapshots()
+11. dashboard.html              – 4 zakładki + flow + fixes
+12. docs/                       – architecture, data-model, decisions, migration
+Doprecyzowania Finalne
+F1. accessory_bonus nie ratuje listingu
+Flaga accessory_bonus jest WYŁĄCZNIE informacyjna. Nie zmienia eligibility ani confidence. Listing z accessory_bonus przechodzi pełną walidację jak każdy inny – jeśli ma niski confidence lub brakuje mu requiredForConfigKey, jest visible_only niezależnie od flagi. Flaga jedynie mówi UI: „ten listing ma bonus w zestawie".
+
+F2. Skąd validateNormalized bierze penalty adaptera
+Wybrane rozwiązanie: Adapter's normalize() zwraca osobny wewnętrzny typ AdapterNormalizationResult – nie bezpośrednio Partial<NormalizedListing>. Dopiero z niego budujemy NormalizedListing. Dzięki temu NormalizedListing (kontrakt publiczny) nie jest zanieczyszczony polami technicznymi.
+
+
+// Typ techniczny – eksportowany wewnątrz normalizer/, NIE re-eksportowany na zewnątrz modułu
+export interface AdapterNormalizationResult {
+  fields: Partial<NormalizedListing>;       // docelowe pola produktowe
+  penalties: { flag: string; delta: number }[]; // penalty do validateNormalized
+}
+
+// normalize() w adapterze zwraca AdapterNormalizationResult:
+normalize(input: AdapterInput): AdapterNormalizationResult {
+  const fields: Partial<NormalizedListing> = { model: 'iphone_17', variant: 'pro_max', ... };
+  const penalties: { flag: string; delta: number }[] = [];
+  if (ramImplausible) penalties.push({ flag: 'ram_implausible', delta: -0.35 });
+  return { fields, penalties };
+}
+
+// BaseAdapter kontrakt (aktualizacja):
+normalize(input: AdapterInput): AdapterNormalizationResult;
+
+// validateNormalized przyjmuje fields + penalties jawnie:
+export function validateNormalized(
+  fields: Partial<NormalizedListing>,
+  penalties: { flag: string; delta: number }[],
+  input: AdapterInput,
+  adapter: BaseAdapter,
+  isBundle: boolean,
+): ValidationResult {
+  // ... hard reject checks ...
+  let confidence = 1.0;
+  const flags: string[] = [];
+  for (const p of penalties) { confidence += p.delta; flags.push(p.flag); }
+  // ... reszta kroków ...
+}
+
+// W normalizeListing():
+const { fields, penalties } = adapter.normalize(input);
+const isBundle = detectBundle(input);
+const { eligibility, confidence, flags } = validateNormalized(fields, penalties, input, adapter, isBundle);
+const configKey = eligibility !== 'rejected' ? adapter.buildConfigKey(fields) : undefined;
+// Budujemy NormalizedListing wyłącznie z fields – bez technicznych pól wewnętrznych
+NormalizedListing = publiczny kontrakt (STABLE CORE). AdapterNormalizationResult = typ techniczny normalizer/ – eksportowany wewnątrz modułu, ale nie re-eksportowany z normalizer/index.ts na zewnątrz.
+
+F3. Scheduler: noScore + budgetMode
+Logika wbudowana w sekcji Etap 7 (powyżej). Kanoniczna definicja hasValidScore w F5.
+
+Reguła skrócona:
+
+budgetMode nie wymaga valid score – działa wyłącznie na listing.price
+marketMode wymaga valid score – bez snapshotu → passesMarket = false
+F4. suggestedConfigKey – mechanizm promoted path
+Pole w MonitoredItem:
+
+
+suggestedConfigKey?: string | null;       // propozycja od schedulera; null = wyczyszczone
+suggestedConfigKeyLabel?: string | null;  // human-readable label dla UI; null = wyczyszczone
+// REGUŁA SERIALIZACJI: w JSON/store canonical value = null (nie undefined).
+// undefined znika przy JSON.stringify – używamy null, żeby stan był eksplicytny na dysku.
+Cykl życia sugestii:
+
+Scheduler unresolved/legacy → jeśli discoverAndBuildSnapshots() zwróci 1 wariant dataConfidence='high' → zapisz suggestedConfigKey + suggestedConfigKeyLabel do MonitoredItem
+UI w zakładce Monitorowanie → przy monitorze unresolved/legacy z suggestedConfigKey: pokazuje banner: „Znaleziono pasujący wariant: [label] – Przypisz?"
+User klika „Przypisz" → PUT /api/items/{id} z { configKey: suggestedConfigKey, monitorStatus: 'resolved', suggestedConfigKey: null, suggestedConfigKeyLabel: null }
+User klika „Odrzuć" → PUT /api/items/{id} z { suggestedConfigKey: null, suggestedConfigKeyLabel: null } → sugestia znika; przy kolejnym cyklu schedulera może pojawić się nowa sugestia jeśli warunki nadal spełnione
+Po resolved: suggestedConfigKey = null, scheduler używa computeVariantSnapshot()
+F5. hasValidScore – poprawna definicja
+DealScore (w src/types.ts) musi zawierać pole isNoScore. DealQuality musi zawierać wartość 'no_data' dla przypadku braku snapshotu:
+
+
+// DealQuality – rozszerzony o no_data dla noScore()
+export type DealQuality = 'excellent' | 'good' | 'fair' | 'poor' | 'no_data';
+
+export interface DealScore {
+  isNoScore: boolean;        // true gdy brak snapshotu lub inny brak danych
+  configKey?: string;
+  marketMedian: number;      // 0 gdy isNoScore=true
+  discount: number;          // może być ujemny (listing droższy od mediany)
+  quality: DealQuality;      // 'no_data' gdy isNoScore=true
+  p25?: number; p75?: number;
+}
+noScore() jest jedyną funkcją tworzącą wynik bez danych. Zawsze zwraca pełny obiekt:
+
+
+function noScore(): DealScore {
+  return {
+    isNoScore: true,
+    configKey: undefined,
+    marketMedian: 0,
+    discount: 0,
+    quality: 'no_data',
+    p25: undefined,
+    p75: undefined,
+  };
+}
+
+// BŁĘDNE (discount może być 0 lub ujemny dla drogich ofert – to nadal valid score):
+const hasValidScore = score.discount > 0 && score.marketMedian > 0;
+
+// POPRAWNE:
+const hasValidScore = !score.isNoScore && score.marketMedian > 0;
+// Listing drogi (discount ujemny) = valid score, po prostu nie jest okazją
+F6. Condition matching – ścisła reguła
+
+// Reguła biznesowa (STABLE):
+// listing.condition = 'new'     → może generować deal dla monitora 'new' i 'all'
+// listing.condition = 'used'    → może generować deal dla monitora 'used' i 'all'
+// listing.condition = 'unknown' → TYLKO dla monitora 'all'
+
+// Implementacja w scoreDealFromNormalized():
+const lc = listing.condition;
+const mc = condition;  // item.condition
+const conditionCompatible =
+  (lc === 'new'     && (mc === 'new'  || mc === 'all')) ||
+  (lc === 'used'    && (mc === 'used' || mc === 'all')) ||
+  (lc === 'unknown' &&  mc === 'all');                  // unknown → TYLKO all
+
+if (!conditionCompatible) return noScore(listing);
+F7. isBundle w validateNormalized – jawne przekazanie
+isBundle wyliczane jest PRZED wywołaniem adaptera, w normalizeListing(). Przekazywane jawnie do validateNormalized jako dodatkowy parametr – nie polegamy na tym, że partial.isBundle już istnieje.
+
+
+// W normalizeListing():
+const { fields, penalties } = adapter.normalize(input);
+const isBundle = detectBundle(input);   // wyliczone PRZED validateNormalized
+const { eligibility, confidence, flags } =
+  validateNormalized(fields, penalties, input, adapter, isBundle);
+
+// Sygnatura validateNormalized (kanoniczna – zgodna z F2):
+export function validateNormalized(
+  fields: Partial<NormalizedListing>,
+  penalties: { flag: string; delta: number }[],
+  input: AdapterInput,
+  adapter: BaseAdapter,
+  isBundle: boolean,       // jawne przekazanie – nie czytamy z partial
+): ValidationResult
+
+// W kroku Bundle:
+if (isBundle) return { eligibility: 'visible_only', confidence, flags: [...flags, 'bundle'] };
+Weryfikacja
+Spójność danych:
+Market scan "iphone 17 pro max 256gb" → Rynek: mediana = X
+"Sprawdź ceny" tą samą frazą → identyczna mediana X
+Deal card "iPhone 17 Pro Max 256GB" → ta sama mediana X
+Portfolio (kupiony deal) → marketMedianAtPurchase zachowany, zysk liczony od niego
+Kategoryzacja:
+"Sprzedam iPhone 17 2GB/256GB" → visible_only, NIE w statystykach, NIE generuje deala
+"Etui do iPhone 17" → rejected, niewidoczne
+"iPhone 17 256GB + etui gratis" → market_eligible, flaga accessory_bonus, akcesorium nie powoduje reject
+"iPhone 17 max 256GB" (bez pro) → variantCertainty='ambiguous', visible_only, NIE w statystykach
+"iPhone 17 256GB" (bez wariantu, bez 'max') → variantCertainty='base_model', market_eligible dla apple_iphone_17_256gb
+"MacBook Air M4 16GB 256GB" → configKey: apple_macbook_air_m4_13_16gb_256gb
+condition + deal detection:
+Listing condition='unknown' → może generować deale TYLKO dla monitora condition='all'
+Monitor condition='new' → listing condition='unknown' NIE generuje deala
+monitorRules:
+Monitor budgetMode only → powiadomienie gdy price ≤ maxPrice (triggerLogic ignorowane)
+Monitor marketMode only → powiadomienie tylko gdy istnieje valid score (!isNoScore && marketMedian > 0) ORAZ discount ≥ minDiscountPct (triggerLogic ignorowane; bez snapshotu = brak alertu)
+Monitor oba tryby + triggerLogic='all' → powiadomienie gdy OBA spełnione jednocześnie
+Monitor oba tryby + triggerLogic='any' → powiadomienie gdy KTÓRYKOLWIEK spełniony
+Migracja + promoted:
+Legacy monitor → migruje do monitorRules, status='legacy', nie crashuje
+Po "Przypisz do wariantu" → status='resolved', scheduler używa computeVariantSnapshot()
+Stary deal bez configKey → liveDataConfidence: 'no_data', widoczny w UI z ostrzeżeniem
+cheapestVisible:
+cheapestVisible NIE pokazuje % od mediany, NIE ma CTA okazji, ma etykietę "niepotwierdzona konfiguracja"
+Techniczne:
+npm run typecheck → 0 błędów
+npm test → wszystkie testy przechodzą

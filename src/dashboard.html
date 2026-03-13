@@ -1,0 +1,1870 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>OLX Monitor</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --surface2: #22263a;
+    --border: #2e3248; --text: #e2e8f0; --muted: #8892a4;
+    --green: #22c55e; --yellow: #f59e0b; --red: #ef4444; --blue: #3b82f6;
+    --purple: #8b5cf6; --radius: 8px;
+  }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; }
+  header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 14px 24px; display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 18px; font-weight: 700; }
+  header span { color: var(--muted); font-size: 12px; }
+  #status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+
+  .tabs { display: flex; border-bottom: 1px solid var(--border); background: var(--surface); padding: 0 24px; }
+  .tab { padding: 12px 20px; cursor: pointer; border-bottom: 2px solid transparent; color: var(--muted); font-weight: 500; transition: all .15s; }
+  .tab.active { color: var(--text); border-bottom-color: var(--blue); }
+  .tab:hover:not(.active) { color: var(--text); }
+  .tab-badge { background: var(--red); color: #fff; border-radius: 10px; padding: 1px 6px; font-size: 11px; margin-left: 6px; }
+
+  .page { display: none; padding: 24px; }
+  .page.active { display: block; }
+
+  .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: var(--radius); border: none; cursor: pointer; font-size: 13px; font-weight: 500; transition: opacity .15s; }
+  .btn:hover { opacity: .85; }
+  .btn-primary { background: var(--blue); color: #fff; }
+  .btn-ghost { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  .btn-danger { background: var(--red); color: #fff; }
+  .btn-sm { padding: 5px 10px; font-size: 12px; }
+  .btn-green { background: var(--green); color: #000; }
+  .btn-yellow { background: var(--yellow); color: #000; }
+  .btn-purple { background: var(--purple); color: #fff; }
+
+  select, input[type=text], input[type=number] {
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+    padding: 7px 10px; border-radius: var(--radius); font-size: 13px; outline: none;
+  }
+  select:focus, input:focus { border-color: var(--blue); }
+
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; padding: 10px 12px; color: var(--muted); font-weight: 500; font-size: 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:hover td { background: var(--surface2); }
+
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+  .badge-green { background: #166534; color: #86efac; }
+  .badge-yellow { background: #78350f; color: #fde68a; }
+  .badge-red { background: #7f1d1d; color: #fca5a5; }
+  .badge-gray { background: var(--surface2); color: var(--muted); }
+  .badge-blue { background: #1e3a5f; color: #93c5fd; }
+  /* Deal quality badges */
+  .badge-good      { background: #78350f; color: #fde68a; font-size: 12px; padding: 3px 10px; }
+  .badge-very-good { background: #7c2d12; color: #fdba74; font-size: 12px; padding: 3px 10px; }
+  .badge-extreme   { background: #450a0a; color: #fca5a5; font-size: 12px; padding: 3px 10px; animation: pulse-border .8s ease-in-out infinite alternate; }
+  @keyframes pulse-border { from { box-shadow: 0 0 0 0 rgba(239,68,68,.4); } to { box-shadow: 0 0 0 4px rgba(239,68,68,0); } }
+
+  .toggle { position: relative; width: 36px; height: 20px; cursor: pointer; }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; inset: 0; background: var(--surface2); border-radius: 20px; transition: .2s; }
+  .slider::before { content: ''; position: absolute; width: 14px; height: 14px; left: 3px; top: 3px; background: var(--muted); border-radius: 50%; transition: .2s; }
+  input:checked + .slider { background: var(--blue); }
+  input:checked + .slider::before { transform: translateX(16px); background: #fff; }
+
+  /* Modal */
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 100; align-items: center; justify-content: center; }
+  .modal-overlay.open { display: flex; }
+  .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; width: 480px; max-width: 95vw; max-height: 90vh; display: flex; flex-direction: column; }
+  .modal-body { overflow-y: auto; padding: 24px; flex: 1; }
+  .modal h2 { font-size: 16px; margin-bottom: 20px; }
+  .form-row { margin-bottom: 14px; }
+  .form-row label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 5px; }
+  .form-row input, .form-row select { width: 100%; }
+  .form-actions { display: flex; gap: 10px; justify-content: flex-end; padding: 16px 24px; border-top: 1px solid var(--border); background: var(--surface); border-radius: 0 0 12px 12px; flex-shrink: 0; }
+
+  /* Deal card details */
+  .deal-img { width: 60px; height: 60px; object-fit: cover; border-radius: 6px; background: var(--surface2); flex-shrink: 0; }
+  .deal-img-placeholder { width: 60px; height: 60px; border-radius: 6px; background: var(--surface2); display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 20px; flex-shrink: 0; }
+  .deal-title { font-weight: 600; color: var(--text); text-decoration: none; }
+  .deal-title:hover { color: var(--blue); }
+  .price-big { font-size: 18px; font-weight: 700; }
+  .price-green { color: var(--green); }
+  .price-yellow { color: var(--yellow); }
+  .tag-list { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .tag { background: var(--surface2); border: 1px solid var(--border); color: var(--muted); padding: 2px 7px; border-radius: 4px; font-size: 11px; }
+  .tag-red { background: #7f1d1d33; border-color: #7f1d1d; color: #fca5a5; }
+  .msg-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  .empty { text-align: center; color: var(--muted); padding: 48px 0; }
+  .loader { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--blue); border-radius: 50%; animation: spin .6s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .filter-bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  .filter-bar label { color: var(--muted); font-size: 12px; }
+
+  /* Status sub-tabs */
+  .status-tabs { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+  .stab { padding: 6px 14px; border-radius: 20px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-size: 13px; font-weight: 500; cursor: pointer; transition: all .15s; display: flex; align-items: center; gap: 6px; }
+  .stab:hover { background: var(--surface2); color: var(--text); }
+  .stab.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+  .stab-badge { background: rgba(255,255,255,.25); border-radius: 10px; padding: 1px 6px; font-size: 11px; font-weight: 700; }
+  .stab:not(.active) .stab-badge { background: var(--surface2); color: var(--muted); }
+
+  .specs-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 6px; margin-top: 6px; }
+  .spec-item { background: var(--surface2); border-radius: 4px; padding: 4px 8px; }
+  .spec-key { color: var(--muted); font-size: 10px; }
+  .spec-val { font-weight: 600; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div id="status-dot"></div>
+  <h1>OLX Monitor</h1>
+  <span id="header-sub">Ładowanie…</span>
+</header>
+
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('items')">Monitorowane <span id="badge-items" class="tab-badge" style="display:none"></span></div>
+  <div class="tab" onclick="switchTab('deals')">Okazje <span id="badge-deals" class="tab-badge" style="display:none"></span></div>
+  <div class="tab" onclick="switchTab('market')">Rynek</div>
+  <div class="tab" onclick="switchTab('imei')">Weryfikacja iPhone</div>
+  <div class="tab" onclick="switchTab('portfolio')">Moje Deale <span id="badge-portfolio" class="tab-badge" style="display:none"></span></div>
+</div>
+
+<!-- Tab: Items -->
+<div id="page-items" class="page active">
+  <div class="toolbar">
+    <button class="btn btn-primary" onclick="openAddModal()">+ Dodaj przedmiot</button>
+    <button class="btn btn-ghost" onclick="refreshItems()">↻ Odśwież</button>
+  </div>
+  <div id="items-table-wrap">
+    <div class="empty"><div class="loader"></div></div>
+  </div>
+</div>
+
+<!-- Tab: Deals -->
+<div id="page-deals" class="page">
+  <div class="filter-bar">
+    <label>Przedmiot:</label>
+    <select id="filter-item" onchange="renderDeals()">
+      <option value="">Wszystkie</option>
+    </select>
+    <label>Jakość:</label>
+    <select id="filter-quality" onchange="renderDeals()">
+      <option value="">Wszystkie</option>
+      <option value="good">Good Deal+</option>
+      <option value="very_good">Very Good Deal+</option>
+      <option value="extreme">Extreme Deal</option>
+    </select>
+    <button class="btn btn-ghost btn-sm" onclick="refreshDeals()">↻ Odśwież</button>
+  </div>
+  <div class="status-tabs" id="status-tabs">
+    <button class="stab active" data-stab="new" onclick="setStatusTab('new')">Nowe <span class="stab-badge" id="stab-badge-new">0</span></button>
+    <button class="stab" data-stab="active" onclick="setStatusTab('active')">W toku <span class="stab-badge" id="stab-badge-active">0</span></button>
+    <button class="stab" data-stab="pass" onclick="setStatusTab('pass')">Odpuszczone <span class="stab-badge" id="stab-badge-pass">0</span></button>
+    <button class="stab" data-stab="dismissed" onclick="setStatusTab('dismissed')">Odrzucone <span class="stab-badge" id="stab-badge-dismissed">0</span></button>
+    <button class="stab" data-stab="all" onclick="setStatusTab('all')">Wszystkie <span class="stab-badge" id="stab-badge-all">0</span></button>
+  </div>
+  <div id="bulk-bar" style="display:none;align-items:center;gap:12px;padding:10px 0;margin-bottom:4px;border-bottom:1px solid var(--border);">
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+      <input type="checkbox" id="select-all-cb" onchange="selectAllDeals(this.checked)" style="width:16px;height:16px;cursor:pointer"/>
+      <span id="select-count" style="font-size:13px;color:var(--muted)">0 zaznaczonych</span>
+    </label>
+    <button class="btn btn-danger btn-sm" onclick="deleteSelected()">🗑 Usuń zaznaczone</button>
+    <button class="btn btn-ghost btn-sm" onclick="clearSelection()">✕ Odznacz</button>
+  </div>
+  <div id="deals-view-switcher" style="display:flex;gap:8px;margin-bottom:12px">
+    <button id="btn-view-deals" class="btn btn-primary btn-sm" onclick="switchDealsView('deals')">🏆 Okazje rynkowe</button>
+    <button id="btn-view-budget" class="btn btn-ghost btn-sm" onclick="switchDealsView('budget')">💰 W budżecie</button>
+  </div>
+  <div id="deals-table-wrap">
+    <div class="empty"><div class="loader"></div></div>
+  </div>
+  <div id="budget-section" style="display:none">
+    <div style="color:var(--muted);font-size:12px;margin-bottom:10px">
+      Wszystkie aktualne ogłoszenia OLX w Twoim budżecie — niezależnie od mediany rynkowej.
+    </div>
+    <select id="budget-item-select" style="margin-bottom:10px;width:100%;padding:6px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)" onchange="loadBudgetListings()">
+      <option value="">Wybierz przedmiot…</option>
+    </select>
+    <div id="budget-listings-wrap"></div>
+  </div>
+</div>
+
+<!-- Tab: Market Scan -->
+<div id="page-market" class="page">
+  <div class="toolbar" style="margin-bottom:20px;flex-wrap:wrap">
+    <input type="text" id="ms-query" placeholder="np. iphone 17, macbook air m4, rtx 5090" style="min-width:260px"/>
+    <select id="ms-condition">
+      <option value="all">Wszystkie stany</option>
+      <option value="used" selected>Używane</option>
+      <option value="new">Nowe</option>
+    </select>
+    <div style="display:flex;align-items:center;gap:6px">
+      <label style="color:var(--muted);font-size:12px;white-space:nowrap">Min cena:</label>
+      <input type="number" id="ms-min-price" placeholder="np. 500" min="0" style="width:90px" title="Minimalna cena – odfiltruje akcesoria (etui, folie itp.)"/>
+      <span style="color:var(--muted);font-size:12px">zł</span>
+    </div>
+    <button class="btn btn-primary" onclick="runMarketScan()">🔍 Skanuj rynek</button>
+    <span id="ms-status" style="color:var(--muted);font-size:12px"></span>
+  </div>
+  <div id="ms-results"></div>
+</div>
+
+<!-- Tab: IMEI Verification -->
+<div id="page-imei" class="page">
+  <div style="max-width:720px">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:20px">
+      <h3 style="margin-bottom:14px;font-size:15px">Dodaj urządzenie do weryfikacji</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div>
+          <label style="display:block;color:var(--muted);font-size:11px;margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">IMEI (15 cyfr)</label>
+          <input type="text" id="imei-input" placeholder="np. 353879110198306" maxlength="15" style="width:100%"/>
+        </div>
+        <div>
+          <label style="display:block;color:var(--muted);font-size:11px;margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Numer seryjny (11–12 znaków)</label>
+          <input type="text" id="serial-input" placeholder="np. C39XH0DXDTY3" maxlength="12" style="width:100%"/>
+        </div>
+      </div>
+      <div style="margin-bottom:12px">
+        <label style="display:block;color:var(--muted);font-size:11px;margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">URL ogłoszenia OLX (opcjonalnie)</label>
+        <input type="text" id="imei-listing-url" placeholder="https://www.olx.pl/d/oferta/..." style="width:100%"/>
+      </div>
+      <div style="margin-bottom:14px">
+        <label style="display:block;color:var(--muted);font-size:11px;margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Tytuł ogłoszenia (opcjonalnie – do wykrycia niespójności)</label>
+        <input type="text" id="imei-listing-title" placeholder="np. iPhone 15 Pro Max 256GB Stan idealny" style="width:100%"/>
+      </div>
+      <button class="btn btn-primary" onclick="addImeiRecord()" id="imei-add-btn">🔍 Dodaj i zweryfikuj</button>
+      <span id="imei-add-status" style="color:var(--muted);font-size:12px;margin-left:10px"></span>
+    </div>
+    <div id="imei-records-list"></div>
+  </div>
+</div>
+
+<!-- Page: Moje Deale (Portfolio) -->
+<div id="page-portfolio" class="page">
+  <!-- Summary bar -->
+  <div id="portfolio-summary" style="margin-bottom:20px"></div>
+  <!-- Purchased section -->
+  <div id="portfolio-purchased"></div>
+  <!-- Sold section -->
+  <div id="portfolio-sold"></div>
+</div>
+
+<!-- Modal: Price (purchase / sale) -->
+<div id="price-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:9999;align-items:center;justify-content:center" onclick="if(event.target===this)closePriceModal()">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:28px;width:340px;max-width:calc(100vw - 40px);box-shadow:0 20px 60px rgba(0,0,0,.5)">
+    <div id="price-modal-title" style="font-weight:700;font-size:17px;margin-bottom:6px"></div>
+    <div id="price-modal-subtitle" style="color:var(--muted);font-size:12px;margin-bottom:18px"></div>
+    <div style="position:relative;margin-bottom:20px">
+      <input id="price-modal-input" type="number" min="1" step="1" placeholder="np. 3200"
+        style="width:100%;padding:10px 40px 10px 12px;box-sizing:border-box;font-size:15px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"
+        onkeydown="if(event.key==='Enter')confirmPriceModal()">
+      <span style="position:absolute;right:12px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:13px">zł</span>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-ghost" onclick="closePriceModal()">Anuluj</button>
+      <button class="btn btn-primary" onclick="confirmPriceModal()" id="price-modal-confirm">Potwierdź</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Add/Edit Item -->
+<div class="modal-overlay" id="item-modal" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <div class="modal-body">
+    <h2 id="modal-title">Dodaj przedmiot</h2>
+
+    <!-- ══ SEKCJA 1: Wyszukiwanie i filtrowanie ══════════════════════════════ -->
+    <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:14px">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:10px">🔎 Wyszukiwanie i filtrowanie ogłoszeń</div>
+
+      <div class="form-row"><label>Nazwa (widoczna w dashboardzie)</label><input type="text" id="f-name" placeholder="np. iPhone 14 Pro Max"/></div>
+      <div class="form-row"><label>Fraza wyszukiwania na OLX</label><input type="text" id="f-query" placeholder="np. iphone 14 pro max"/>
+        <div style="color:var(--muted);font-size:11px;margin-top:4px">Wpisz dokładnie tak jak szukałbyś na OLX — system pobiera wyniki tej frazy</div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px">
+        <div class="form-row">
+          <label>Cena minimalna (zł) — filtr śmieci</label>
+          <input type="number" id="f-min-price" placeholder="np. 1500" min="0"/>
+          <div style="color:var(--muted);font-size:11px;margin-top:4px">Odrzuca akcesoria, obudowy i podejrzanie tanie oferty. Np. 1500 zł dla iPhone'ów.</div>
+        </div>
+        <div class="form-row">
+          <label>Twoja maksymalna cena (zł)</label>
+          <input type="number" id="f-price" placeholder="np. 4000" min="1"/>
+          <div style="color:var(--muted);font-size:11px;margin-top:4px">Ogłoszenia droższe nie pojawią się w Okazjach. <strong>Nie wpływa na medianę rynkową.</strong></div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label>Wymagane słowa w tytule (oddziel przecinkami)</label>
+        <input type="text" id="f-keywords" placeholder="np. iphone, pro – oferta MUSI zawierać oba"/>
+        <div style="color:var(--muted);font-size:11px;margin-top:4px">Opcjonalnie — filtruje tylko oferty zawierające te słowa w tytule</div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px">
+        <div class="form-row"><label>Stan</label>
+          <select id="f-condition">
+            <option value="all">Wszystkie</option>
+            <option value="used">Używane</option>
+            <option value="new">Nowe</option>
+          </select>
+        </div>
+        <div class="form-row"><label>Interwał sprawdzania (minuty, min 10)</label><input type="number" id="f-interval" value="15" min="10"/></div>
+      </div>
+    </div>
+
+    <!-- ══ SEKCJA 2: Jakość okazji — na podstawie mediany rynkowej ══════════ -->
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:14px">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:6px">📊 Jakość okazji — na podstawie mediany rynkowej</div>
+      <div style="color:var(--muted);font-size:12px;margin-bottom:12px;line-height:1.5">
+        Widełki cenowe okazji (Good Deal, Very Good Deal itd.) są obliczane od <strong style="color:var(--text)">mediany rynkowej</strong> — nie od Twojej max ceny.<br>
+        Uruchom analizę poniżej, aby system znał aktualną cenę rynkową i mógł wyliczyć dokładne progi.
+      </div>
+
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:0">
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-analyze-price" onclick="analyzePrice()">📊 Sprawdź aktualne ceny rynkowe</button>
+        <span id="price-analyze-status" style="color:var(--muted);font-size:12px"></span>
+      </div>
+      <div id="price-analysis-result" style="display:none;margin-top:12px"></div>
+
+      <div class="form-row" style="margin-top:12px">
+        <label>Minimalna jakość okazji do powiadomienia</label>
+        <select id="f-min-deal-quality" style="width:100%">
+          <option value="good">🟡 Good Deal (5–15% poniżej mediany)</option>
+          <option value="very_good">🔥 Very Good Deal (15–30%)</option>
+          <option value="extreme">🚨 Extreme Deal (30%+)</option>
+        </select>
+        <div style="color:var(--muted);font-size:11px;margin-top:4px">
+          Widełki cenowe obliczane od mediany rynkowej — uruchom analizę powyżej, aby zobaczyć dokładne kwoty. Ogłoszenia bez danych rynkowych są zawsze powiadamiane.
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label>Własna wiadomość do sprzedawcy (opcjonalna)</label>
+        <textarea id="f-custom-message" placeholder="np. Czy telefon jest sprawny? Kiedy możliwa wysyłka?" rows="3"
+          style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:var(--radius);font-size:13px;resize:vertical;outline:none;font-family:inherit"></textarea>
+        <div style="color:var(--muted);font-size:11px;margin-top:4px">Napisz raz – kliknij jednym przyciskiem przy każdej okazji, by skopiować i otworzyć ogłoszenie</div>
+      </div>
+    </div>
+    </div><!-- end .modal-body -->
+    <div class="form-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">Anuluj</button>
+      <button class="btn btn-primary" onclick="saveItem()">Zapisz</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast" style="position:fixed;bottom:24px;right:24px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 18px;display:none;z-index:200;max-width:320px;font-size:13px;"></div>
+
+<script>
+const API = '';
+let items = [], deals = [], editingItemId = null, activeStatusTab = 'new';
+let _analyzedMedian = 0;      // mediana z analizy rynku (Sprawdź aktualne ceny)
+let _analyzedCondition = 'all'; // condition użyte przy ostatniej analizie
+let _dealsView = 'deals';     // 'deals' | 'budget'
+const selectedDeals = new Set();
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+
+async function apiFetch(path) {
+  const r = await fetch(API + path);
+  return r.json();
+}
+async function apiPost(path, body) {
+  const r = await fetch(API + path, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  return r.json();
+}
+async function apiPut(path, body) {
+  const r = await fetch(API + path, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  return r.json();
+}
+async function apiDelete(path) {
+  const r = await fetch(API + path, { method: 'DELETE' });
+  return r.json();
+}
+
+function toast(msg, type = 'info') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.display = 'block';
+  el.style.borderColor = type === 'error' ? 'var(--red)' : type === 'success' ? 'var(--green)' : 'var(--border)';
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.style.display = 'none', 3000);
+}
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', ['items','deals','market','imei','portfolio'][i] === name));
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  if (name === 'imei')      refreshImei();
+  if (name === 'portfolio') refreshPortfolio();
+}
+
+// ── Items ────────────────────────────────────────────────────────────────
+
+async function refreshItems() {
+  const res = await apiFetch('/api/items');
+  items = res.data ?? [];
+  renderItems();
+  updateBadges();
+  updateFilterItemSelect();
+}
+
+function renderItems() {
+  const wrap = document.getElementById('items-table-wrap');
+  if (!items.length) {
+    wrap.innerHTML = '<div class="empty">Brak monitorowanych przedmiotów.<br>Kliknij <strong>+ Dodaj przedmiot</strong> żeby zacząć.</div>';
+    return;
+  }
+  wrap.innerHTML = `<table>
+    <thead><tr>
+      <th>Nazwa</th><th>Fraza OLX</th><th>Cena (min–max)</th><th>Wymagane słowa</th><th>Stan</th>
+      <th>Interwał</th><th>Aktywny</th><th>Ostatnie sprawdzenie</th><th>Akcje</th>
+    </tr></thead>
+    <tbody>${items.map(itemRow).join('')}</tbody>
+  </table>`;
+}
+
+function itemRow(item) {
+  const lastCheck = item.lastCheckedAt
+    ? new Date(item.lastCheckedAt).toLocaleString('pl-PL')
+    : '—';
+  const condLabel = {all:'Wszystkie',used:'Używane',new:'Nowe'}[item.condition] ?? item.condition;
+  const kwTags = (item.requiredKeywords ?? []).map(k => `<span class="tag">${esc(k)}</span>`).join('');
+  return `<tr>
+    <td><strong>${esc(item.name)}</strong></td>
+    <td style="color:var(--muted)">${esc(item.searchQuery)}</td>
+    <td><strong>${item.maxPrice.toLocaleString('pl-PL')} zł</strong>${item.minPrice ? `<br><span style="color:var(--muted);font-size:11px">min ${item.minPrice.toLocaleString('pl-PL')} zł</span>` : ''}</td>
+    <td><div class="tag-list">${kwTags || '<span style="color:var(--muted)">—</span>'}</div></td>
+    <td>${condLabel}</td>
+    <td>${item.intervalMinutes} min</td>
+    <td>
+      <label class="toggle">
+        <input type="checkbox" ${item.enabled ? 'checked' : ''} onchange="toggleItem('${item.id}', this.checked)"/>
+        <span class="slider"></span>
+      </label>
+    </td>
+    <td style="color:var(--muted);font-size:12px">${lastCheck}</td>
+    <td>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-ghost btn-sm" onclick="checkNow('${item.id}')">▶ Sprawdź teraz</button>
+        <button class="btn btn-ghost btn-sm" onclick="openEditModal('${item.id}')">✎ Edytuj</button>
+        <button class="btn btn-danger btn-sm" onclick="removeItem('${item.id}')">✕</button>
+      </div>
+    </td>
+  </tr>`;
+}
+
+async function toggleItem(id, enabled) {
+  await apiPut(`/api/items/${id}`, { enabled });
+  await refreshItems();
+}
+
+async function checkNow(id) {
+  const btn = event.currentTarget;
+  btn.disabled = true;
+  btn.textContent = '…';
+  const res = await apiPost(`/api/check/${id}`, {});
+  btn.disabled = false;
+  btn.textContent = '▶ Sprawdź teraz';
+  if (res.ok) {
+    toast(`Znaleziono ${res.data.newDeals} nowych okazji`, 'success');
+    await refreshDeals();
+  } else {
+    toast('Błąd: ' + (res.error ?? 'nieznany'), 'error');
+  }
+}
+
+async function removeItem(id) {
+  if (!confirm('Usunąć ten przedmiot z monitorowania?')) return;
+  await apiDelete(`/api/items/${id}`);
+  await refreshItems();
+  toast('Usunięto', 'success');
+}
+
+// ── Quality options ────────────────────────────────────────────────────────
+
+function updateQualityOptions() {
+  const sel = document.getElementById('f-min-deal-quality');
+  const current = sel.value;
+  const median = _analyzedMedian;
+  const opts = [
+    { value: 'good',      emoji: '🟡', label: 'Good Deal',      pctLow: 5,  pctHigh: 15  },
+    { value: 'very_good', emoji: '🔥', label: 'Very Good Deal', pctLow: 15, pctHigh: 30  },
+    { value: 'extreme',   emoji: '🚨', label: 'Extreme Deal',   pctLow: 30, pctHigh: null },
+  ];
+
+  if (median <= 0) {
+    // Brak danych z analizy — pokaż tylko opisy procentowe
+    sel.innerHTML = opts.map(o => {
+      const suffix = o.pctHigh === null
+        ? ` (${o.pctLow}%+ poniżej mediany — uruchom analizę)`
+        : ` (${o.pctLow}–${o.pctHigh}% poniżej mediany — uruchom analizę)`;
+      return `<option value="${o.value}"${current===o.value?' selected':''}>${o.emoji} ${o.label}${suffix}</option>`;
+    }).join('');
+    return;
+  }
+
+  // Widełki obliczone od realnej mediany rynkowej
+  const fmt = n => n.toLocaleString('pl-PL');
+  sel.innerHTML = opts.map(o => {
+    const hi = Math.round(median * (1 - o.pctLow  / 100) / 50) * 50;
+    const lo = o.pctHigh === null
+      ? Math.round(median * 0.50 / 50) * 50
+      : Math.round(median * (1 - o.pctHigh / 100) / 50) * 50;
+    const suffix = o.pctHigh === null
+      ? ` (${o.pctLow}%+ · poniżej ~${fmt(hi)} zł)`
+      : ` (${o.pctLow}–${o.pctHigh}% · ~${fmt(lo)}–${fmt(hi)} zł)`;
+    return `<option value="${o.value}"${current===o.value?' selected':''}>${o.emoji} ${o.label}${suffix}</option>`;
+  }).join('');
+}
+
+// ── Modal ────────────────────────────────────────────────────────────────
+
+function openAddModal() {
+  editingItemId = null;
+  _analyzedMedian = 0;
+  _analyzedCondition = 'all';
+  document.getElementById('modal-title').textContent = 'Dodaj przedmiot';
+  document.getElementById('f-name').value = '';
+  document.getElementById('f-query').value = '';
+  document.getElementById('f-min-price').value = '';
+  document.getElementById('f-price').value = '';
+  document.getElementById('f-keywords').value = '';
+  document.getElementById('f-condition').value = 'all';
+  document.getElementById('f-interval').value = '15';
+  document.getElementById('f-min-deal-quality').value = 'good';
+  document.getElementById('f-custom-message').value = '';
+  document.getElementById('price-analysis-result').style.display = 'none';
+  document.getElementById('price-analyze-status').textContent = '';
+  updateQualityOptions();
+  document.getElementById('item-modal').classList.add('open');
+}
+
+async function openEditModal(id) {
+  const item = items.find(i => i.id === id);
+  if (!item) return;
+  editingItemId = id;
+  _analyzedMedian = 0;
+  _analyzedCondition = item.condition ?? 'all';
+  document.getElementById('modal-title').textContent = 'Edytuj przedmiot';
+  document.getElementById('f-name').value = item.name;
+  document.getElementById('f-query').value = item.searchQuery;
+  document.getElementById('f-min-price').value = item.minPrice ?? '';
+  document.getElementById('f-price').value = item.maxPrice;
+  document.getElementById('f-keywords').value = (item.requiredKeywords ?? []).join(', ');
+  document.getElementById('f-condition').value = item.condition;
+  document.getElementById('f-interval').value = item.intervalMinutes;
+  document.getElementById('f-min-deal-quality').value = item.minDealQuality ?? 'good';
+  document.getElementById('f-custom-message').value = item.customMessage ?? '';
+  document.getElementById('price-analysis-result').style.display = 'none';
+  document.getElementById('price-analyze-status').textContent = 'Ładowanie danych rynkowych…';
+  updateQualityOptions();
+  document.getElementById('item-modal').classList.add('open');
+  // Spróbuj załadować cached medianę dla tego przedmiotu
+  const query = item.searchQuery;
+  const condition = item.condition;
+  // Możemy odpytać cache przez price-stats (configKey nie znamy tu, ale możemy spróbować przez analizę)
+  // Użyj price-analysis w trybie szybkim (bez zapisu do UI) żeby pobrać medianę
+  try {
+    const params = new URLSearchParams({ query, condition });
+    if (item.minPrice > 0) params.set('minPrice', String(item.minPrice));
+    const res = await apiFetch('/api/price-analysis?' + params.toString());
+    document.getElementById('price-analyze-status').textContent = '';
+    if (res.ok && res.data?.stats?.median > 0) {
+      _analyzedMedian = res.data.stats.median;
+      _analyzedCondition = condition;
+      updateQualityOptions();
+      document.getElementById('price-analyze-status').textContent =
+        `Mediana rynkowa: ${res.data.stats.median.toLocaleString('pl-PL')} zł (${res.data.reliableCount} ogłoszeń)`;
+    }
+  } catch { document.getElementById('price-analyze-status').textContent = ''; }
+}
+
+function closeModal() {
+  document.getElementById('item-modal').classList.remove('open');
+}
+
+async function saveItem() {
+  const body = {
+    name: document.getElementById('f-name').value.trim(),
+    searchQuery: document.getElementById('f-query').value.trim(),
+    minPrice: Number(document.getElementById('f-min-price').value || 0),
+    maxPrice: Number(document.getElementById('f-price').value),
+    requiredKeywords: document.getElementById('f-keywords').value.trim(),
+    condition: document.getElementById('f-condition').value,
+    intervalMinutes: Number(document.getElementById('f-interval').value),
+    minDealQuality: document.getElementById('f-min-deal-quality').value,
+    customMessage: document.getElementById('f-custom-message').value.trim(),
+  };
+  if (!body.name || !body.searchQuery || !body.maxPrice) {
+    toast('Wypełnij wszystkie wymagane pola', 'error'); return;
+  }
+  let res;
+  if (editingItemId) {
+    res = await apiPut(`/api/items/${editingItemId}`, body);
+  } else {
+    res = await apiPost('/api/items', body);
+  }
+  if (res.ok) {
+    closeModal();
+    await refreshItems();
+    toast(editingItemId ? 'Zaktualizowano' : 'Dodano przedmiot', 'success');
+  } else {
+    toast('Błąd: ' + res.error, 'error');
+  }
+}
+
+// ── Price Analysis ───────────────────────────────────────────────────────
+
+async function analyzePrice() {
+  const query = document.getElementById('f-query').value.trim();
+  const condition = document.getElementById('f-condition').value;
+  const minPrice = Number(document.getElementById('f-min-price').value || 0);
+  const maxPrice = Number(document.getElementById('f-price').value || 0);
+
+  if (!query) { toast('Wpisz frazę wyszukiwania', 'error'); return; }
+
+  const btn = document.getElementById('btn-analyze-price');
+  const status = document.getElementById('price-analyze-status');
+  const result = document.getElementById('price-analysis-result');
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="loader"></span> Pobieranie ogłoszeń…';
+  status.textContent = 'To może potrwać ~10–30 sekund';
+  result.style.display = 'none';
+
+  const keywords = document.getElementById('f-keywords').value.trim();
+
+  // STABLE RULE: minPrice NOT sent to API – market always measured from 0 PLN
+  const params = new URLSearchParams({ query, condition });
+  if (keywords) params.set('keywords', keywords);
+
+  try {
+    const res = await apiFetch('/api/price-analysis?' + params.toString());
+    btn.disabled = false;
+    btn.innerHTML = '📊 Sprawdź aktualne ceny';
+
+    if (!res.ok) { status.textContent = 'Błąd: ' + res.error; return; }
+    const d = res.data;
+
+    if (!d.stats || d.reliableCount === 0) {
+      status.textContent = '';
+      result.style.display = 'block';
+      result.innerHTML = `<div style="color:var(--muted);font-size:13px">Nie znaleziono wiarygodnych ogłoszeń dla tej frazy. Spróbuj zmienić frazę lub rozszerzyć zakres cen.</div>`;
+      return;
+    }
+
+    status.textContent = '';
+    const s = d.stats;
+    _analyzedMedian = s.median;
+    _analyzedCondition = condition;
+    updateQualityOptions();
+    const fmt = n => n.toLocaleString('pl-PL') + ' zł';
+
+    result.style.display = 'block';
+    result.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div style="font-size:12px;color:var(--muted)">
+          Przeanalizowano <strong style="color:var(--text)">${d.reliableCount}</strong> wiarygodnych ogłoszeń
+          (pominięto ${d.suspiciousCount} uszkodzonych/wadliwych z ${d.totalFetched} łącznie)
+        </div>
+        <button onclick="document.getElementById('price-analysis-result').style.display='none'" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:0 0 0 8px;line-height:1" title="Zamknij wyniki">✕</button>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px">
+        ${[['min',s.min,'var(--muted)'],['mediana',s.median,'var(--text)'],['średnia',s.avg,'var(--text)'],['max',s.max,'var(--muted)']].map(([label,val,col]) =>
+          `<div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;text-align:center">
+            <div style="color:var(--muted);font-size:10px;margin-bottom:2px">${label}</div>
+            <div style="font-weight:700;color:${col};font-size:13px">${fmt(val)}</div>
+          </div>`).join('')}
+      </div>
+
+      <div style="background:var(--bg);border:1px solid var(--green);border-radius:6px;padding:10px 12px;margin-bottom:10px">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">SUGEROWANE WIDEŁKI CENOWE</div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span style="font-size:16px;font-weight:700;color:var(--green)">${fmt(d.suggestedMin)} – ${fmt(d.suggestedMax)}</span>
+          <button class="btn btn-green btn-sm" onclick="applyPriceSuggestion(${d.suggestedMin},${d.suggestedMax})">✓ Zastosuj</button>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">
+          Min = najniższa cena po odrzuceniu outlierów · Max = p75 (75% ogłoszeń jest tańszych)
+        </div>
+      </div>
+
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">8 NAJTAŃSZYCH WIARYGODNYCH OGŁOSZEŃ</div>
+      ${d.recentReliable.map(l => `
+        <div style="display:flex;align-items:baseline;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">
+          <span style="font-weight:700;color:var(--green);flex-shrink:0">${fmt(l.price)}</span>
+          <a href="${esc(l.url)}" target="_blank" style="color:var(--text);text-decoration:none;font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(l.title)}">${esc(l.title)}</a>
+          <span style="color:var(--muted);font-size:11px;flex-shrink:0">${esc(l.location)}</span>
+        </div>`).join('')}
+    `;
+  } catch (e) {
+    btn.disabled = false;
+    btn.innerHTML = '📊 Sprawdź aktualne ceny';
+    status.textContent = 'Błąd połączenia';
+  }
+}
+
+function applyPriceSuggestion(min, max) {
+  document.getElementById('f-min-price').value = min;
+  document.getElementById('f-price').value = max;
+  toast('Widełki cenowe zastosowane', 'success');
+}
+
+// ── Budget view ───────────────────────────────────────────────────────────
+
+function switchDealsView(view) {
+  _dealsView = view;
+  document.getElementById('deals-table-wrap').style.display = view === 'deals' ? '' : 'none';
+  document.getElementById('budget-section').style.display = view === 'budget' ? '' : 'none';
+  document.getElementById('btn-view-deals').className = view === 'deals' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
+  document.getElementById('btn-view-budget').className = view === 'budget' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
+  if (view === 'budget') populateBudgetItemSelect();
+}
+
+function populateBudgetItemSelect() {
+  const sel = document.getElementById('budget-item-select');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">Wybierz przedmiot…</option>' +
+    items.filter(i => i.enabled).map(i =>
+      `<option value="${i.id}"${i.id === current ? ' selected' : ''}>${esc(i.name)} (do ${i.maxPrice.toLocaleString('pl-PL')} zł)</option>`
+    ).join('');
+}
+
+async function loadBudgetListings() {
+  const itemId = document.getElementById('budget-item-select').value;
+  if (!itemId) return;
+  const wrap = document.getElementById('budget-listings-wrap');
+  wrap.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:12px 0">Pobieranie ogłoszeń…</div>';
+  const res = await apiFetch(`/api/items/${itemId}/browse`);
+  if (!res.ok) { wrap.innerHTML = `<div class="empty">${esc(res.error)}</div>`; return; }
+  const listings = res.data.listings;
+  if (!listings.length) { wrap.innerHTML = '<div class="empty">Brak ogłoszeń w tym budżecie.</div>'; return; }
+  wrap.innerHTML = listings.map(l => `
+    <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+      ${l.imageUrl ? `<img src="${esc(l.imageUrl)}" style="width:48px;height:48px;object-fit:cover;border-radius:6px;flex-shrink:0" loading="lazy">` : '<div style="width:48px;height:48px;background:var(--surface2);border-radius:6px;flex-shrink:0"></div>'}
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          <a href="${esc(l.url)}" target="_blank" style="color:var(--text);text-decoration:none">${esc(l.title)}</a>
+        </div>
+        <div style="font-size:11px;color:var(--muted)">${esc(l.location)} · ${new Date(l.postedAt).toLocaleDateString('pl-PL')}</div>
+      </div>
+      <div style="font-weight:700;color:var(--green);flex-shrink:0">${esc(l.priceText)}</div>
+    </div>
+  `).join('');
+}
+
+// ── Status tabs ───────────────────────────────────────────────────────────
+
+function setStatusTab(tab) {
+  activeStatusTab = tab;
+  document.querySelectorAll('.stab').forEach(b => b.classList.toggle('active', b.dataset.stab === tab));
+  selectedDeals.clear();
+  renderDeals();
+}
+
+const PORTFOLIO_STATUSES = ['purchased', 'sold'];
+
+function isPortfolioDeal(d) { return PORTFOLIO_STATUSES.includes(d.contactStatus); }
+
+function statusTabFilter(d) {
+  if (isPortfolioDeal(d)) return false; // never show in Okazje
+  if (activeStatusTab === 'new')       return d.contactStatus === 'none' && !d.dismissed;
+  if (activeStatusTab === 'active')    return ['contacted','replied','negotiating'].includes(d.contactStatus) && !d.dismissed;
+  if (activeStatusTab === 'pass')      return d.contactStatus === 'pass' && !d.dismissed;
+  if (activeStatusTab === 'dismissed') return d.dismissed;
+  return !d.dismissed; // 'all' — exclude dismissed from count but show active
+}
+
+function updateStatusTabBadges() {
+  const filterItem = document.getElementById('filter-item').value;
+  const base = deals.filter(d => (!filterItem || d.itemId === filterItem) && qualityFilter(d) && !isPortfolioDeal(d));
+  document.getElementById('stab-badge-new').textContent       = base.filter(d => d.contactStatus === 'none' && !d.dismissed).length;
+  document.getElementById('stab-badge-active').textContent    = base.filter(d => ['contacted','replied','negotiating'].includes(d.contactStatus) && !d.dismissed).length;
+  document.getElementById('stab-badge-pass').textContent      = base.filter(d => d.contactStatus === 'pass' && !d.dismissed).length;
+  document.getElementById('stab-badge-dismissed').textContent = base.filter(d => d.dismissed).length;
+  document.getElementById('stab-badge-all').textContent       = base.filter(d => !d.dismissed).length;
+
+  // Portfolio badge = purchased count
+  const portfolioCount = deals.filter(d => d.contactStatus === 'purchased').length;
+  const portfolioBadge = document.getElementById('badge-portfolio');
+  if (portfolioBadge) {
+    portfolioBadge.textContent = portfolioCount;
+    portfolioBadge.style.display = portfolioCount > 0 ? 'inline-flex' : 'none';
+  }
+}
+
+// ── Deals ────────────────────────────────────────────────────────────────
+
+async function refreshDeals() {
+  const res = await apiFetch('/api/deals');
+  deals = res.data ?? [];
+  renderDeals();
+  updateBadges();
+}
+
+const QUALITY_ORDER_FILTER = ['normal', 'good', 'very_good', 'extreme'];
+
+function qualityFilter(d) {
+  const minQ = document.getElementById('filter-quality').value;
+  if (!minQ) return true;
+  const dRank = QUALITY_ORDER_FILTER.indexOf(d.dealQuality ?? 'normal');
+  const minRank = QUALITY_ORDER_FILTER.indexOf(minQ);
+  return dRank >= minRank;
+}
+
+function renderDeals() {
+  const wrap = document.getElementById('deals-table-wrap');
+  const filterItem = document.getElementById('filter-item').value;
+
+  updateStatusTabBadges();
+
+  let filtered = deals.filter(d => {
+    if (filterItem && d.itemId !== filterItem) return false;
+    if (!qualityFilter(d)) return false;
+    return statusTabFilter(d);
+  });
+
+  if (!filtered.length) {
+    wrap.innerHTML = '<div class="empty">Brak okazji spełniających kryteria.<br>Dodaj przedmioty do monitorowania i kliknij <strong>Sprawdź teraz</strong>.</div>';
+    return;
+  }
+
+  wrap.innerHTML = filtered.map(dealRow).join('');
+  updateBulkBar();
+}
+
+function priceColor(price, threshold) {
+  const item = items.find(i => deals.find(d => d.id && d.itemId === i.id));
+  const ratio = price / threshold;
+  return ratio < 0.8 ? 'price-green' : 'price-yellow';
+}
+
+const QUALITY_CFG = {
+  good:      { cls: 'badge-good',      label: '🟡 Good Deal'      },
+  very_good: { cls: 'badge-very-good', label: '🔥 Very Good Deal' },
+  extreme:   { cls: 'badge-extreme',   label: '🚨 Extreme Deal'   },
+};
+
+function dealRow(deal) {
+  const a = deal.analysis;
+
+  // v2: use live data preferentially, fall back to stored values
+  const median = deal.liveMarketMedian ?? deal.marketMedian ?? 0;
+  const savings = deal.liveDiscount ?? deal.dealScore ?? 0;
+  const quality = deal.liveQuality ?? deal.dealQuality;
+  const confidence = deal.liveDataConfidence ?? 'no_data';
+
+  const hasMarket = median > 0;
+  const pClass = savings >= 15 ? 'price-green' : savings >= 5 ? 'price-yellow' : '';
+
+  // Deal quality badge
+  const qCfg = QUALITY_CFG[quality];
+  const qualityBadge = qCfg
+    ? `<span class="badge ${qCfg.cls}">${qCfg.label} −${savings}%</span>`
+    : '';
+
+  // Confidence warning badge
+  const confidenceBadge = (confidence === 'no_data' || confidence === 'low')
+    ? `<span class="badge badge-gray" title="Brak aktualnych danych rynkowych – mediany mogą być nieaktualne">${confidence === 'no_data' ? '⚠ brak danych' : '⚠ niski data confidence'}</span>`
+    : '';
+
+  // Etykieta zniżki
+  const savingsLabel = hasMarket
+    ? `−${savings}% od mediany ${median.toLocaleString('pl-PL')} zł`
+    : `Brak mediany rynkowej`;
+
+  const riskBadge = {
+    low: '<span class="badge badge-green">low risk</span>',
+    medium: '<span class="badge badge-yellow">medium risk</span>',
+    high: '<span class="badge badge-red">high risk</span>',
+  }[a.riskScore] ?? '';
+
+  const defects = a.defects.length
+    ? `<div class="tag-list">${a.defects.map(d => `<span class="tag tag-red">${esc(d)}</span>`).join('')}</div>`
+    : '<span style="color:var(--muted);font-size:12px">Brak wad</span>';
+
+  const flags = a.riskFlags.length
+    ? `<div class="tag-list">${a.riskFlags.map(f => `<span class="tag tag-red">${esc(f)}</span>`).join('')}</div>`
+    : '—';
+
+  const specs = Object.entries(a.technicalSpecs ?? {}).length
+    ? `<div class="specs-grid">${Object.entries(a.technicalSpecs).map(([k,v]) => `<div class="spec-item"><div class="spec-key">${esc(k)}</div><div class="spec-val">${esc(String(v))}</div></div>`).join('')}</div>`
+    : '';
+
+  const imgEl = deal.listing.imageUrl
+    ? `<img class="deal-img" src="${esc(deal.listing.imageUrl)}" loading="lazy" onerror="this.style.display='none'">`
+    : `<div class="deal-img-placeholder">📱</div>`;
+
+  const statusOptions = ['none','contacted','replied','negotiating','pass','purchased'];
+  const statusLabels = {none:'Brak kontaktu',contacted:'Skontaktowano',replied:'Odpowiedź',negotiating:'Negocjacje',pass:'Odpuszczam',purchased:'🛒 Kupiono'};
+  const statusSelect = `<select onchange="onStatusChange('${deal.id}', this)" style="font-size:12px">
+    ${statusOptions.map(s => `<option value="${s}" ${deal.contactStatus===s?'selected':''}>${statusLabels[s]}</option>`).join('')}
+  </select>`;
+
+  const dimStyle = deal.dismissed ? 'opacity:.4;' : '';
+  const isSelected = selectedDeals.has(deal.id);
+  const selStyle = isSelected ? 'border-color:var(--blue);box-shadow:0 0 0 2px rgba(59,130,246,.2);' : '';
+
+  return `<div id="deal-card-${deal.id}" style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px;${dimStyle}${selStyle}">
+    <div style="display:flex;gap:14px;align-items:flex-start">
+      <input type="checkbox" ${isSelected ? 'checked' : ''} onchange="toggleSelectDeal('${deal.id}',this.checked)"
+        style="width:16px;height:16px;flex-shrink:0;margin-top:4px;cursor:pointer" title="Zaznacz"/>
+      ${imgEl}
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          ${qualityBadge}
+          ${confidenceBadge}
+          <a class="deal-title" href="${esc(deal.listing.url)}" target="_blank">${esc(deal.listing.title)}</a>
+          ${riskBadge}
+          ${a.hasProofOfPurchase ? '<span class="badge badge-green">paragon</span>' : ''}
+          ${a.serialNumber ? `<span class="badge badge-blue" title="Numer weryfikacyjny podany przez sprzedawcę">IMEI/SN: ${esc(a.serialNumber)}</span>` : ''}
+          ${deal.dismissed ? '<span class="badge badge-gray">odrzucone</span>' : ''}
+        </div>
+        <div style="margin-top:6px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+          <span class="price-big ${pClass}">${deal.listing.priceText}</span>
+          <span style="color:var(--muted);font-size:12px">${savingsLabel}</span>
+          <span style="color:var(--muted);font-size:12px">${esc(deal.listing.location)} · ${formatDate(deal.listing.postedAt)}</span>
+        </div>
+        <div style="margin-top:8px;color:var(--muted);font-size:13px;line-height:1.5">${esc(a.summary)}</div>
+        ${specs ? `<div style="margin-top:8px">${specs}</div>` : ''}
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;flex-shrink:0">
+        ${statusSelect}
+        <button class="btn btn-danger btn-sm" onclick="dismissDeal('${deal.id}','${deal.dismissed}')">${deal.dismissed ? '↩ Przywróć' : '✕ Usuń'}</button>
+        <button class="btn btn-ghost btn-sm" onclick="reanalyzeDeal('${deal.id}')">🔄 Analizuj</button>
+      </div>
+    </div>
+
+    <div style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div>
+        <div style="color:var(--muted);font-size:11px;margin-bottom:4px">WADY</div>
+        ${defects}
+      </div>
+      <div>
+        <div style="color:var(--muted);font-size:11px;margin-bottom:4px">CZERWONE FLAGI</div>
+        ${flags}
+      </div>
+    </div>
+
+    <div style="margin-top:12px">
+      <div style="color:var(--muted);font-size:11px;margin-bottom:6px">ODPOWIEDŹ SPRZEDAWCY</div>
+      <input type="text" value="${esc(deal.sellerReply ?? '')}" placeholder="Wpisz odpowiedź sprzedawcy…"
+        onblur="updateDealField('${deal.id}','sellerReply',this.value)"
+        style="width:100%;margin-bottom:10px"/>
+      <div class="msg-actions">
+        <button class="btn btn-green btn-sm" onclick="sendMsg('${deal.id}','buynow')">⚡ Biorę od razu za tą cenę</button>
+        <button class="btn btn-green btn-sm" onclick="sendMsg('${deal.id}','negotiate')">💬 Negocjuj cenę</button>
+        <button class="btn btn-ghost btn-sm" onclick="sendMsg('${deal.id}','interested')" style="background:var(--blue);color:#fff;border:none">👋 Zainteresowany</button>
+        <button class="btn btn-purple btn-sm" onclick="sendMsg('${deal.id}','proof')">🧾 Dowód zakupu?</button>
+        ${items.find(i => i.id === deal.itemId)?.customMessage ? `<button class="btn btn-sm" style="background:#0e4429;border:1px solid #166534;color:#86efac" onclick="sendMsg('${deal.id}','custom')">✉ Własna wiadomość</button>` : ''}
+        ${(deal.configKey?.startsWith('apple_iphone') || deal.listing.title.toLowerCase().includes('iphone')) ? `<button class="btn btn-sm" style="background:#1c2e4a;border:1px solid #2d5f9e;color:#93c5fd" onclick="openImeiVerification('${deal.id}')">🔍 Zweryfikuj iPhone</button>` : ''}
+      </div>
+    </div>
+  </div>`;
+}
+
+async function updateDealField(id, field, value) {
+  await apiPut(`/api/deals/${id}`, { [field]: value });
+  const idx = deals.findIndex(d => d.id === id);
+  if (idx >= 0) deals[idx] = { ...deals[idx], [field]: value };
+}
+
+// ── Status change interceptor ─────────────────────────────────────────────
+
+function onStatusChange(dealId, selectEl) {
+  const newVal = selectEl.value;
+  if (newVal === 'purchased') {
+    // Revert select visually — confirmed only after modal
+    const deal = deals.find(d => d.id === dealId);
+    selectEl.value = deal?.contactStatus ?? 'none';
+    openPriceModal(dealId, 'purchase');
+  } else {
+    updateDealField(dealId, 'contactStatus', newVal);
+    renderDeals();
+  }
+}
+
+// ── Price modal ───────────────────────────────────────────────────────────
+
+let _priceModalDealId = null;
+let _priceModalMode   = null; // 'purchase' | 'sale'
+
+function openPriceModal(dealId, mode) {
+  _priceModalDealId = dealId;
+  _priceModalMode   = mode;
+  const deal = deals.find(d => d.id === dealId);
+  const name = deal?.listing?.title ?? deal?.itemName ?? '';
+  const isPurchase = mode === 'purchase';
+  document.getElementById('price-modal-title').textContent    = isPurchase ? '🛒 Cena zakupu' : '💰 Cena sprzedaży';
+  document.getElementById('price-modal-subtitle').textContent = name ? name.slice(0, 60) + (name.length > 60 ? '…' : '') : '';
+  document.getElementById('price-modal-confirm').textContent  = isPurchase ? 'Zapisz zakup' : 'Zapisz sprzedaż';
+  const inp = document.getElementById('price-modal-input');
+  inp.value = '';
+  inp.placeholder = isPurchase ? 'Ile zapłaciłeś? (zł)' : 'Ile sprzedałeś? (zł)';
+  const modal = document.getElementById('price-modal');
+  modal.style.display = 'flex';
+  setTimeout(() => inp.focus(), 50);
+}
+
+function closePriceModal() {
+  document.getElementById('price-modal').style.display = 'none';
+  _priceModalDealId = null;
+  _priceModalMode   = null;
+}
+
+async function confirmPriceModal() {
+  const price = Number(document.getElementById('price-modal-input').value);
+  if (!price || price <= 0) {
+    document.getElementById('price-modal-input').style.borderColor = 'var(--red)';
+    return;
+  }
+  document.getElementById('price-modal-input').style.borderColor = '';
+
+  const id   = _priceModalDealId;
+  const mode = _priceModalMode;
+  closePriceModal();
+
+  if (mode === 'purchase') {
+    const payload = { contactStatus: 'purchased', purchasePrice: price, purchasedAt: new Date().toISOString() };
+    const res = await apiPut(`/api/deals/${id}`, payload);
+    if (res.ok) {
+      const idx = deals.findIndex(d => d.id === id);
+      if (idx >= 0) deals[idx] = res.data;
+      toast('Zakup zapisany! Deal przeniesiony do Moje Deale.', 'success');
+      renderDeals();
+      updateStatusTabBadges();
+    } else {
+      toast('Błąd zapisu: ' + (res.error ?? 'nieznany'), 'error');
+    }
+  } else {
+    const payload = { contactStatus: 'sold', salePrice: price, soldAt: new Date().toISOString() };
+    const res = await apiPut(`/api/deals/${id}`, payload);
+    if (res.ok) {
+      const idx = deals.findIndex(d => d.id === id);
+      if (idx >= 0) deals[idx] = res.data;
+      toast('Sprzedaż zapisana!', 'success');
+      renderPortfolio();
+      updateStatusTabBadges();
+    } else {
+      toast('Błąd zapisu: ' + (res.error ?? 'nieznany'), 'error');
+    }
+  }
+}
+
+// ── Portfolio (Moje Deale) ────────────────────────────────────────────────
+
+async function refreshPortfolio() {
+  if (!deals.length) {
+    const res = await apiFetch('/api/deals');
+    if (res.ok) deals = res.data ?? [];
+  }
+  renderPortfolio();
+}
+
+function pln(n) {
+  return Number(n).toLocaleString('pl-PL', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) + ' zł';
+}
+
+function renderPortfolio() {
+  const purchased = deals.filter(d => d.contactStatus === 'purchased');
+  const sold      = deals.filter(d => d.contactStatus === 'sold');
+
+  // Summary stats
+  const totalInvested  = [...purchased, ...sold].reduce((s, d) => s + (d.purchasePrice ?? 0), 0);
+  const totalRevenue   = sold.reduce((s, d) => s + (d.salePrice ?? 0), 0);
+  const totalProfit    = totalRevenue - sold.reduce((s, d) => s + (d.purchasePrice ?? 0), 0);
+  const profitPositive = totalProfit >= 0;
+
+  // Summary bar
+  document.getElementById('portfolio-summary').innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px">
+      ${summaryTile('Zainwestowano', pln(totalInvested), '#94a3b8', '💼')}
+      ${summaryTile('Przychód ze sprzedaży', pln(totalRevenue), '#94a3b8', '📦')}
+      ${summaryTile('Łączny zysk', (profitPositive ? '+' : '') + pln(totalProfit), profitPositive ? '#4ade80' : '#f87171', profitPositive ? '📈' : '📉')}
+      ${summaryTile('Sprzedanych', sold.length + ' szt.', '#94a3b8', '✅')}
+      ${summaryTile('W portfelu', purchased.length + ' szt.', '#fbbf24', '🛒')}
+    </div>`;
+
+  // Purchased section
+  const purchasedWrap = document.getElementById('portfolio-purchased');
+  if (!purchased.length) {
+    purchasedWrap.innerHTML = '';
+  } else {
+    purchasedWrap.innerHTML = `
+      <div style="font-weight:700;font-size:14px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px">
+        🛒 Zakupione <span style="font-weight:400;color:var(--muted)">(${purchased.length})</span>
+      </div>
+      ${purchased.map(d => portfolioPurchasedCard(d)).join('')}`;
+  }
+
+  // Sold section
+  const soldWrap = document.getElementById('portfolio-sold');
+  if (!sold.length) {
+    soldWrap.innerHTML = purchased.length ? '' :
+      `<div class="empty">Brak transakcji w portfelu.<br>Zmień status okazji na <strong>🛒 Kupiono</strong> aby przenieść deal tutaj.</div>`;
+  } else {
+    soldWrap.innerHTML = `
+      <div style="font-weight:700;font-size:14px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:${purchased.length ? 24 : 0}px 0 12px">
+        ✅ Sprzedane <span style="font-weight:400;color:var(--muted)">(${sold.length})</span>
+      </div>
+      ${sold.map(d => portfolioSoldCard(d)).join('')}`;
+  }
+
+  if (!purchased.length && !sold.length) {
+    document.getElementById('portfolio-sold').innerHTML =
+      `<div class="empty">Brak transakcji w portfelu.<br>Zmień status okazji na <strong>🛒 Kupiono</strong> aby przenieść deal tutaj.</div>`;
+  }
+}
+
+function summaryTile(label, value, color, icon) {
+  return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px">
+    <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">${icon} ${label}</div>
+    <div style="font-size:22px;font-weight:800;color:${color};letter-spacing:-.5px">${value}</div>
+  </div>`;
+}
+
+function portfolioPurchasedCard(d) {
+  const name    = d.listing?.title ?? d.itemName;
+  const price   = d.purchasePrice ?? 0;
+  const date    = d.purchasedAt ? new Date(d.purchasedAt).toLocaleDateString('pl-PL') : '—';
+  // Use immutable median at time of purchase (v2), fall back to stored marketMedian
+  const median  = d.marketMedianAtPurchase ?? d.marketMedianAtDiscovery ?? d.marketMedian ?? 0;
+  const saving  = median && price < median ? median - price : 0;
+  const savingPct = median && saving > 0 ? ((saving / median) * 100).toFixed(0) : 0;
+  return `<div style="background:var(--surface);border:1px solid #1e3a5f;border-radius:12px;padding:16px;margin-bottom:10px;display:flex;align-items:flex-start;gap:16px">
+    ${d.listing?.imageUrl ? `<img src="${esc(d.listing.imageUrl)}" style="width:56px;height:56px;object-fit:cover;border-radius:8px;flex-shrink:0">` : `<div style="width:56px;height:56px;background:var(--bg);border-radius:8px;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:22px">📱</div>`}
+    <div style="flex:1;min-width:0">
+      <div style="font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:4px">
+        ${d.listing?.url ? `<a href="${esc(d.listing.url)}" target="_blank" style="color:var(--text);text-decoration:none">${esc(name)}</a>` : esc(name)}
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+        <span style="font-size:20px;font-weight:800;color:#60a5fa">${pln(price)}</span>
+        ${saving > 0 ? `<span style="font-size:11px;color:#4ade80;background:#052e16;padding:2px 8px;border-radius:4px" title="Mediana rynkowa: ${pln(median)}">−${savingPct}% od mediany (${pln(saving)} taniej)</span>` : ''}
+        ${median && !saving ? `<span style="font-size:11px;color:var(--muted)">mediana rynkowa: ${pln(median)}</span>` : ''}
+        <span style="font-size:11px;color:var(--muted)">kupiono ${date}</span>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0">
+      <button class="btn btn-primary btn-sm" onclick="openPriceModal('${d.id}','sale')">💰 Sprzedano</button>
+      <button class="btn btn-ghost btn-sm" onclick="revertToDeals('${d.id}')" title="Wróć do zakładki Okazje">↩ Anuluj zakup</button>
+    </div>
+  </div>`;
+}
+
+function portfolioSoldCard(d) {
+  const name       = d.listing?.title ?? d.itemName;
+  const buyPrice   = d.purchasePrice ?? 0;
+  const sellPrice  = d.salePrice ?? 0;
+  const profit     = sellPrice - buyPrice;
+  const margin     = buyPrice > 0 ? ((profit / buyPrice) * 100).toFixed(1) : 0;
+  const profitPos  = profit >= 0;
+  const buyDate    = d.purchasedAt ? new Date(d.purchasedAt).toLocaleDateString('pl-PL') : '—';
+  const sellDate   = d.soldAt      ? new Date(d.soldAt).toLocaleDateString('pl-PL')      : '—';
+  const flipDays   = d.purchasedAt && d.soldAt
+    ? Math.round((new Date(d.soldAt) - new Date(d.purchasedAt)) / 86400000) : null;
+
+  return `<div style="background:var(--surface);border:1px solid ${profitPos ? '#14532d' : '#7f1d1d'};border-radius:12px;padding:16px;margin-bottom:10px">
+    <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:12px">
+      ${d.listing?.imageUrl ? `<img src="${esc(d.listing.imageUrl)}" style="width:48px;height:48px;object-fit:cover;border-radius:8px;flex-shrink:0">` : `<div style="width:48px;height:48px;background:var(--bg);border-radius:8px;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:20px">📱</div>`}
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          ${d.listing?.url ? `<a href="${esc(d.listing.url)}" target="_blank" style="color:var(--text);text-decoration:none">${esc(name)}</a>` : esc(name)}
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">
+          Kupiono: ${buyDate}${flipDays !== null ? ` · Flip: ${flipDays} dni` : ''} · Sprzedano: ${sellDate}
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">
+        <div style="font-size:22px;font-weight:800;color:${profitPos ? '#4ade80' : '#f87171'}">${profitPos ? '+' : ''}${pln(profit)}</div>
+        <div style="font-size:11px;color:${profitPos ? '#86efac' : '#fca5a5'}">${profitPos ? '+' : ''}${margin}% marży</div>
+        <button class="btn btn-ghost btn-sm" style="margin-top:2px" onclick="revertSoldToPurchased('${d.id}')" title="Cofnij sprzedaż — wróć do Zakupione">↩ Cofnij sprzedaż</button>
+      </div>
+    </div>
+    <div style="display:flex;gap:16px;padding:10px 12px;background:var(--bg);border-radius:8px">
+      <div>
+        <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:2px">Kupiono za</div>
+        <div style="font-weight:600;font-size:13px;color:#94a3b8">${pln(buyPrice)}</div>
+      </div>
+      <div style="color:var(--border);display:flex;align-items:center">→</div>
+      <div>
+        <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:2px">Sprzedano za</div>
+        <div style="font-weight:600;font-size:13px;color:#e2e8f0">${pln(sellPrice)}</div>
+      </div>
+      ${d.marketMedian ? `
+      <div>
+        <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:2px">Mediana rynkowa</div>
+        <div style="font-weight:600;font-size:13px;color:var(--muted)">${pln(d.marketMedian)}</div>
+      </div>` : ''}
+      <div style="margin-left:auto;display:flex;align-items:center">
+        <span style="font-size:11px;background:${profitPos ? '#052e16' : '#3f0f0f'};color:${profitPos ? '#4ade80' : '#f87171'};padding:3px 10px;border-radius:6px;font-weight:600">
+          ${profitPos ? 'ZYSK' : 'STRATA'} ${profitPos ? '+' : ''}${pln(profit)}
+        </span>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function revertToDeals(id) {
+  const res = await apiPut(`/api/deals/${id}`, { contactStatus: 'negotiating' });
+  if (res.ok) {
+    const idx = deals.findIndex(d => d.id === id);
+    if (idx >= 0) deals[idx] = res.data;
+    toast('Deal przeniesiony z powrotem do Okazje', 'success');
+    renderPortfolio();
+    updateStatusTabBadges();
+  }
+}
+
+async function revertSoldToPurchased(id) {
+  const res = await apiPut(`/api/deals/${id}`, { contactStatus: 'purchased', soldAt: '', salePrice: 0 });
+  if (res.ok) {
+    const idx = deals.findIndex(d => d.id === id);
+    if (idx >= 0) deals[idx] = { ...res.data, soldAt: undefined, salePrice: undefined };
+    toast('Sprzedaż cofnięta — deal wrócił do Zakupione', 'success');
+    renderPortfolio();
+    updateStatusTabBadges();
+  }
+}
+
+async function dismissDeal(id, currentDismissed) {
+  const newVal = currentDismissed === 'true' ? false : true;
+  await apiPut(`/api/deals/${id}`, { dismissed: newVal });
+  await refreshDeals();
+}
+
+async function reanalyzeDeal(id) {
+  toast('Analizuję ogłoszenie…');
+  const res = await apiPost(`/api/deals/${id}/analyze`, {});
+  if (res.ok) {
+    const idx = deals.findIndex(d => d.id === id);
+    if (idx >= 0) deals[idx] = res.data;
+    renderDeals();
+    toast('Analiza zakończona', 'success');
+  } else {
+    toast('Błąd analizy: ' + res.error, 'error');
+  }
+}
+
+function sendMsg(dealId, type) {
+  const deal = deals.find(d => d.id === dealId);
+  if (!deal) return;
+
+  const item = items.find(i => i.id === deal.itemId);
+  const itemThreshold = item?.maxPrice;
+  const suggestPrice = itemThreshold ? Math.round(itemThreshold * 0.85) : deal.listing.price;
+
+  const messages = {
+    buynow: `Witam, jestem zainteresowany, wziąłbym od razu za tą cenę`,
+    negotiate: `Dzień dobry, czy jest możliwość negocjacji ceny? Rozważam zakup za ${suggestPrice.toLocaleString('pl-PL')} zł. Proszę o kontakt.`,
+    interested: `Dzień dobry, jestem zainteresowany zakupem. Mogę kupić od ręki, kiedy jest możliwe spotkanie lub wysyłka?`,
+    proof: `Dzień dobry, czy do telefonu jest dostępny dowód zakupu (paragon lub faktura)?`,
+    custom: item?.customMessage ?? '',
+  };
+
+  const msg = messages[type];
+  if (!msg) { toast('Brak wiadomości – uzupełnij ją w ustawieniach przedmiotu', 'error'); return; }
+
+  navigator.clipboard.writeText(msg).then(() => {
+    toast('Wiadomość skopiowana do schowka!', 'success');
+  }).catch(() => {
+    prompt('Skopiuj wiadomość:', msg);
+  });
+  window.open(deal.listing.url, '_blank');
+}
+
+// ── Bulk selection ────────────────────────────────────────────────────────
+
+function toggleSelectDeal(id, checked) {
+  if (checked) selectedDeals.add(id);
+  else selectedDeals.delete(id);
+  updateBulkBar();
+  // Aktualizuj styl karty bez pełnego re-renderu
+  const card = document.getElementById('deal-card-' + id);
+  if (card) {
+    card.style.borderColor = checked ? 'var(--blue)' : 'var(--border)';
+    card.style.boxShadow = checked ? '0 0 0 2px rgba(59,130,246,.2)' : '';
+  }
+}
+
+function updateBulkBar() {
+  const count = selectedDeals.size;
+  const bar = document.getElementById('bulk-bar');
+  bar.style.display = count > 0 ? 'flex' : 'none';
+  document.getElementById('select-count').textContent = `${count} zaznaczon${count === 1 ? 'a' : 'ych'}`;
+  // Sync select-all checkbox
+  const allCb = document.getElementById('select-all-cb');
+  const visibleIds = getVisibleDealIds();
+  allCb.checked = visibleIds.length > 0 && visibleIds.every(id => selectedDeals.has(id));
+  allCb.indeterminate = count > 0 && !allCb.checked;
+}
+
+function getVisibleDealIds() {
+  const filterItem = document.getElementById('filter-item').value;
+  return deals
+    .filter(d => {
+      if (filterItem && d.itemId !== filterItem) return false;
+      if (!qualityFilter(d)) return false;
+      return statusTabFilter(d);
+    })
+    .map(d => d.id);
+}
+
+function selectAllDeals(checked) {
+  const ids = getVisibleDealIds();
+  ids.forEach(id => checked ? selectedDeals.add(id) : selectedDeals.delete(id));
+  renderDeals();
+}
+
+function clearSelection() {
+  selectedDeals.clear();
+  renderDeals();
+}
+
+async function deleteSelected() {
+  const ids = [...selectedDeals];
+  if (!ids.length) return;
+  if (!confirm(`Usunąć ${ids.length} zaznaczon${ids.length === 1 ? 'ą' : 'ych'} okazj${ids.length === 1 ? 'ę' : 'i'}?`)) return;
+
+  await Promise.all(ids.map(id => apiDelete(`/api/deals/${id}`)));
+  ids.forEach(id => selectedDeals.delete(id));
+  await refreshDeals();
+  toast(`Usunięto ${ids.length} okazji`, 'success');
+}
+
+// ── Utilities ────────────────────────────────────────────────────────────
+
+function updateBadges() {
+  const enabledCount = items.filter(i => i.enabled).length;
+  const newDealsCount = deals.filter(d => !d.dismissed && d.contactStatus === 'none').length;
+
+  const bi = document.getElementById('badge-items');
+  bi.textContent = enabledCount;
+  bi.style.display = enabledCount ? 'inline' : 'none';
+
+  const bd = document.getElementById('badge-deals');
+  bd.textContent = newDealsCount;
+  bd.style.display = newDealsCount ? 'inline' : 'none';
+
+  document.getElementById('header-sub').textContent =
+    `${items.filter(i => i.enabled).length} aktywnych · ${newDealsCount} nowych okazji`;
+}
+
+function updateFilterItemSelect() {
+  const sel = document.getElementById('filter-item');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">Wszystkie przedmioty</option>' +
+    items.map(i => `<option value="${i.id}" ${i.id===current?'selected':''}>${esc(i.name)}</option>`).join('');
+}
+
+function formatDate(iso) {
+  if (!iso) return '—';
+  try { return new Date(iso).toLocaleDateString('pl-PL', {day:'2-digit',month:'2-digit',year:'numeric'}); }
+  catch { return iso; }
+}
+
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Market Scan ──────────────────────────────────────────────────────────
+
+async function runMarketScan() {
+  const query = document.getElementById('ms-query').value.trim();
+  const condition = document.getElementById('ms-condition').value;
+  const minPrice = document.getElementById('ms-min-price').value;
+  if (!query) { toast('Wpisz frazę wyszukiwania', 'error'); return; }
+
+  const status = document.getElementById('ms-status');
+  const results = document.getElementById('ms-results');
+  status.textContent = 'Pobieram ogłoszenia… (~15–30 sek)';
+  results.innerHTML = '<div class="empty"><div class="loader"></div></div>';
+
+  try {
+    // STABLE RULE: minPrice NOT sent to API – market always measured from 0 PLN
+    const params = { query, condition };
+    const res = await apiFetch('/api/market-scan?' + new URLSearchParams(params).toString());
+    status.textContent = '';
+    if (!res.ok) { results.innerHTML = `<div class="empty">${esc(res.error)}</div>`; return; }
+
+    const d = res.data;
+    if (!d.variants.length) {
+      results.innerHTML = '<div class="empty">Brak rozpoznanych wariantów.<br>Spróbuj szerszej frazy, np. <strong>iphone 17</strong> zamiast pełnej nazwy modelu.</div>';
+      return;
+    }
+
+    status.textContent = `Znaleziono ${d.variants.length} wariantów z ${d.totalFetched} ogłoszeń`;
+    results.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:16px">
+      ${d.variants.map(renderVariantCard).join('')}
+    </div>`;
+  } catch (e) {
+    status.textContent = 'Błąd połączenia';
+    results.innerHTML = '';
+  }
+}
+
+function renderPriceHistogram(v) {
+  const hist = v.histogram;
+  if (!hist || !hist.length) return '';
+  const maxCount = Math.max(...hist.map(b => b.count));
+  if (!maxCount) return '';
+
+  const fmtK = n => {
+    if (n >= 1000) {
+      const k = n / 1000;
+      return (k % 1 === 0 ? k : k.toFixed(1)).toString().replace('.', ',') + 'k';
+    }
+    return n.toLocaleString('pl-PL');
+  };
+  const fmtFull = n => Number(n).toLocaleString('pl-PL') + ' zł';
+
+  const medIdx = hist.findIndex((b, i) =>
+    v.stats.median >= b.from && (i === hist.length - 1 || v.stats.median < hist[i + 1].from)
+  );
+  const minIdx = hist.findIndex((b, i) =>
+    v.stats.min >= b.from && (i === hist.length - 1 || v.stats.min < hist[i + 1].from)
+  );
+
+  const bars = hist.map((b, i) => {
+    const heightPct = Math.max(4, Math.round((b.count / maxCount) * 100));
+    const isMed = i === medIdx;
+    const isMin = i === minIdx && i !== medIdx;
+    const bg    = isMed ? 'rgba(99,102,241,0.65)' : isMin ? 'rgba(34,197,94,0.55)' : 'rgba(255,255,255,0.1)';
+    const top   = isMed ? '2px solid #818cf8' : isMin ? '2px solid #4ade80' : '2px solid transparent';
+    const cntColor = isMed ? '#a5b4fc' : isMin ? '#86efac' : 'rgba(255,255,255,0.35)';
+    const cntWeight = (b.count === maxCount || isMed) ? '700' : '400';
+    return `<div style="flex:1;display:flex;flex-direction:column;align-items:center" title="${fmtFull(b.from)} – ${fmtFull(b.to)}: ${b.count} szt.">
+      <div style="font-size:9px;color:${cntColor};font-weight:${cntWeight};line-height:1.4;min-height:13px">${b.count}</div>
+      <div style="width:100%;height:64px;display:flex;align-items:flex-end">
+        <div style="width:100%;height:${heightPct}%;background:${bg};border-radius:3px 3px 0 0;border-top:${top};transition:height .15s"></div>
+      </div>
+      <div style="font-size:9px;color:rgba(255,255,255,0.3);margin-top:3px;white-space:nowrap">${fmtK(b.from)}</div>
+    </div>`;
+  }).join('');
+
+  return `<div style="margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+      <span style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px">Rozkład cen</span>
+      <span style="font-size:10px;color:var(--muted)">
+        <span style="color:#818cf8">▮</span> mediana ${fmtFull(v.stats.median)}
+        &nbsp;
+        <span style="color:#4ade80">▮</span> min ${fmtFull(v.stats.min)}
+      </span>
+    </div>
+    <div style="display:flex;gap:3px">${bars}</div>
+  </div>`;
+}
+
+function renderCheapestRows(listings, suspicious = false) {
+  if (!listings || !listings.length) return '<span style="color:var(--muted);font-size:12px">Brak danych</span>';
+  return listings.map(l => {
+    const isSusp = suspicious || l.isSuspiciousPrice;
+    const priceColor = isSusp ? '#f59e0b' : 'var(--green)';
+    const priceTitle = isSusp ? 'Cena podejrzanie niska – sprawdź ogłoszenie' : '';
+    const priceSuffix = isSusp ? ' ⚠' : '';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">
+      <span style="font-weight:700;color:${priceColor};flex-shrink:0;min-width:80px" title="${priceTitle}">${Number(l.price).toLocaleString('pl-PL')} zł${priceSuffix}</span>
+      <a href="${esc(l.url)}" target="_blank" style="color:var(--text);text-decoration:none;font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(l.title)}">${esc(l.title)}</a>
+      <span style="color:var(--muted);font-size:11px;flex-shrink:0">${esc(l.location)}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderVariantCard(v) {
+  const fmt = n => Number(n).toLocaleString('pl-PL') + ' zł';
+  const kwTags = (v.keywords ?? []).map(k => `<span class="tag">${esc(k)}</span>`).join('');
+
+  // v2: cheapest is cheapestEligible (market data); also show cheapestVisible if present
+  const cheapestRows = renderCheapestRows(v.cheapest ?? v.cheapestEligible ?? []);
+  const visibleRows = (v.cheapestVisible && v.cheapestVisible.length)
+    ? renderCheapestRows(v.cheapestVisible, true)
+    : '';
+
+  const confidenceLabel = { high: '🟢 high', medium: '🟡 medium', low: '🔴 low' }[v.dataConfidence] ?? '';
+  const confidenceBadge = v.dataConfidence
+    ? `<span style="font-size:10px;color:var(--muted)" title="Jakość danych rynkowych">${confidenceLabel} · ${v.sampleCount} ofert</span>`
+    : `<span style="color:var(--muted);font-size:11px">${v.sampleCount} ogłoszeń</span>`;
+
+  const diagnostics = v.diagnostics
+    ? `<span style="font-size:10px;color:var(--muted)" title="raw/rejected/visibleOnly">${v.diagnostics.raw} raw · ${v.diagnostics.rejected} odrzucone · ${v.diagnostics.visibleOnly} niepewne</span>`
+    : '';
+
+  const vJson = JSON.stringify(v).replace(/'/g, '&#39;');
+
+  return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;gap:8px">
+      <div>
+        <div style="font-weight:700;font-size:15px">${esc(v.label)}</div>
+        <div style="margin-top:3px;display:flex;gap:10px;flex-wrap:wrap">${confidenceBadge}${diagnostics}</div>
+      </div>
+      <button class="btn btn-primary btn-sm" style="flex-shrink:0" onclick='addVariantToMonitor(${vJson})'>+ Monitoruj</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px">
+      ${[['min',v.stats.min,'var(--muted)'],['mediana',v.stats.median,'var(--text)'],['p75',v.stats.p75,'var(--muted)'],['max',v.stats.max,'var(--muted)']].map(([lbl,val,col]) =>
+        `<div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:5px 8px;text-align:center">
+          <div style="color:var(--muted);font-size:10px;margin-bottom:2px">${lbl}</div>
+          <div style="font-weight:700;color:${col};font-size:12px">${fmt(val)}</div>
+        </div>`).join('')}
+    </div>
+    ${renderPriceHistogram(v)}
+    ${kwTags ? `<div style="margin-bottom:10px">
+      <div style="color:var(--muted);font-size:10px;margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Słowa kluczowe</div>
+      <div class="tag-list">${kwTags}</div>
+    </div>` : ''}
+    <div style="margin-bottom:${visibleRows ? '12px' : '0'}">
+      <div style="color:var(--muted);font-size:10px;margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Najtańsze oferty rynkowe</div>
+      ${cheapestRows}
+    </div>
+    ${visibleRows ? `<div style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px">
+      <div style="color:var(--muted);font-size:10px;margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">
+        Niepotwierdzona konfiguracja <span style="font-size:9px;background:rgba(245,158,11,.15);color:#f59e0b;border-radius:3px;padding:1px 5px">mniej wiarygodne</span>
+      </div>
+      ${visibleRows}
+    </div>` : ''}
+  </div>`;
+}
+
+function addVariantToMonitor(v) {
+  openAddModal();
+  document.getElementById('f-name').value = v.label;
+  document.getElementById('f-query').value = v.configKey
+    ? v.configKey.replace(/_/g, ' ')
+    : v.label;
+  document.getElementById('f-keywords').value = (v.keywords ?? []).join(', ');
+  // minPrice: NOT set – STABLE RULE: minPrice is a UI filter, not a market parameter
+  const minPriceInput = document.getElementById('f-min-price');
+  if (minPriceInput) minPriceInput.value = '';
+  document.getElementById('f-price').value = v.stats?.p75 ?? '';
+  switchTab('items');
+}
+
+// ── IMEI Verification ────────────────────────────────────────────────────
+
+let imeiRecords = [];
+let _imeiDescCache = {};  // url → description (to pass on submit)
+
+async function refreshImei() {
+  const res = await apiFetch('/api/imei');
+  if (res.ok) {
+    imeiRecords = res.data ?? [];
+    renderImeiRecords();
+  }
+}
+
+// Auto-fetch OLX listing on URL blur
+document.addEventListener('DOMContentLoaded', () => {
+  const urlInput = document.getElementById('imei-listing-url');
+  if (urlInput) {
+    urlInput.addEventListener('blur', async function() {
+      const url = this.value.trim();
+      if (!url.includes('olx.pl')) return;
+      const status = document.getElementById('imei-add-status');
+      status.textContent = 'Importuję ogłoszenie…';
+      try {
+        const res = await apiFetch('/api/imei/fetch-listing?url=' + encodeURIComponent(url));
+        if (res.ok && res.data) {
+          if (res.data.title) document.getElementById('imei-listing-title').value = res.data.title;
+          if (res.data.imeiFromDesc && !document.getElementById('imei-input').value)
+            document.getElementById('imei-input').value = res.data.imeiFromDesc;
+          if (res.data.serialFromDesc && !document.getElementById('serial-input').value)
+            document.getElementById('serial-input').value = res.data.serialFromDesc;
+          if (res.data.description) _imeiDescCache[url] = res.data.description;
+          status.textContent = 'Zaimportowano ✓';
+          setTimeout(() => { status.textContent = ''; }, 2000);
+        } else {
+          status.textContent = res.error ?? 'Nie udało się pobrać';
+        }
+      } catch(e) {
+        status.textContent = 'Błąd importu';
+      }
+    });
+  }
+});
+
+async function addImeiRecord() {
+  const imei         = document.getElementById('imei-input').value.trim();
+  const serial       = document.getElementById('serial-input').value.trim();
+  const listingUrl   = document.getElementById('imei-listing-url').value.trim();
+  const listingTitle = document.getElementById('imei-listing-title').value.trim();
+
+  if (!imei && !serial) {
+    toast('Podaj IMEI lub numer seryjny', 'error');
+    return;
+  }
+
+  const btn = document.getElementById('imei-add-btn');
+  const status = document.getElementById('imei-add-status');
+  btn.disabled = true;
+  status.textContent = 'Weryfikuję…';
+
+  const payload = {};
+  if (imei)  payload.imei  = imei;
+  if (serial) payload.serial = serial;
+  if (listingUrl)   payload.listingUrl   = listingUrl;
+  if (listingTitle) payload.listingTitle = listingTitle;
+  const cachedDesc = _imeiDescCache[listingUrl];
+  if (cachedDesc) payload.listingDescription = cachedDesc;
+
+  const res = await apiPost('/api/imei', payload);
+  btn.disabled = false;
+  if (res.ok) {
+    status.textContent = '';
+    document.getElementById('imei-input').value = '';
+    document.getElementById('serial-input').value = '';
+    document.getElementById('imei-listing-url').value = '';
+    document.getElementById('imei-listing-title').value = '';
+    imeiRecords.unshift(res.data);
+    renderImeiRecords();
+    toast('Zweryfikowano', 'success');
+  } else {
+    status.textContent = res.error ?? 'Błąd';
+    toast(res.error ?? 'Błąd weryfikacji', 'error');
+  }
+}
+
+async function reverifyImei(id) {
+  toast('Odświeżam dane…');
+  const res = await apiPost(`/api/imei/${id}/verify`, {});
+  if (res.ok) {
+    const idx = imeiRecords.findIndex(r => r.id === id);
+    if (idx >= 0) imeiRecords[idx] = res.data;
+    renderImeiRecords();
+    toast('Dane zaktualizowane', 'success');
+  } else {
+    toast(res.error ?? 'Błąd weryfikacji', 'error');
+  }
+}
+
+async function deleteImeiRecord(id) {
+  if (!confirm('Usunąć rekord?')) return;
+  const res = await fetch(`/api/imei/${id}`, { method: 'DELETE' });
+  const j = await res.json();
+  if (j.ok) {
+    imeiRecords = imeiRecords.filter(r => r.id !== id);
+    renderImeiRecords();
+  }
+}
+
+function renderImeiRecords() {
+  const container = document.getElementById('imei-records-list');
+  if (!imeiRecords.length) {
+    container.innerHTML = '<p style="color:var(--muted);font-size:13px">Brak rekordów. Dodaj IMEI lub numer seryjny powyżej.</p>';
+    return;
+  }
+  container.innerHTML = imeiRecords.map(r => renderImeiCard(r)).join('');
+}
+
+function renderImeiCard(r) {
+  const v = r.verification;
+  const discrepancies = v?.discrepancies ?? [];
+  const hasIssues = discrepancies.length > 0 || v?.appleData?.findMyStatus === 'ON' || v?.imeiInfoData?.blacklisted;
+
+  // Model (best source: Apple API → TAC → serial decode → imei.info)
+  const model = v?.decodedSerial?.model ?? v?.imeiInfoData?.model ?? v?.tacData?.modelHint ?? '';
+  const color = v?.decodedSerial?.color ?? '';
+  const capacity = v?.decodedSerial?.capacity ?? '';
+  const manufacturer = v?.tacData?.manufacturer ?? v?.imeiInfoData?.manufacturer ?? '';
+  const tac = v?.tacData?.tac ?? '';
+  const mfrKnown = manufacturer && !manufacturer.startsWith('Nieznany');
+
+  // Build subtitle pills (storage · color · manufacturer)
+  const subtitleParts = [];
+  if (capacity) subtitleParts.push(`<span style="background:#1e3a5f;color:#93c5fd;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600">${esc(capacity)}</span>`);
+  if (color)    subtitleParts.push(`<span style="background:#1c3a2e;color:#6ee7b7;padding:2px 8px;border-radius:999px;font-size:12px">${esc(color)}</span>`);
+  if (mfrKnown) subtitleParts.push(`<span style="background:#1e2e3a;color:#7dd3fc;padding:2px 8px;border-radius:999px;font-size:12px">${esc(manufacturer)}</span>`);
+
+  // Data source legend rows
+  const sourceRows = [];
+
+  // IMEI row
+  let imeiRow = '';
+  if (r.imei) {
+    const validity = v?.imeiValid === true
+      ? '<span class="badge badge-green" style="margin-left:6px">✓ Luhn OK</span>'
+      : v?.imeiValid === false
+        ? '<span class="badge badge-red" style="margin-left:6px">✗ Nieprawidłowy</span>'
+        : '';
+    imeiRow = `<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+      <span style="color:var(--muted);font-size:11px;width:80px;flex-shrink:0">IMEI</span>
+      <span style="font-family:monospace;font-size:13px">${esc(r.imei)}</span>${validity}
+    </div>`;
+  }
+
+  // Serial row
+  let serialRow = '';
+  if (r.serial) {
+    const serialLen = r.serial.length;
+    const serialNote = serialLen === 12
+      ? '<span style="color:var(--muted);font-size:10px;margin-left:4px">(nowy format, losowy)</span>'
+      : serialLen === 11
+        ? '<span style="color:var(--muted);font-size:10px;margin-left:4px">(stary format – zdekodowany)</span>'
+        : '';
+    serialRow = `<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+      <span style="color:var(--muted);font-size:11px;width:80px;flex-shrink:0">Serial</span>
+      <span style="font-family:monospace;font-size:13px">${esc(r.serial)}</span>${serialNote}
+    </div>`;
+  }
+
+  // TAC row
+  let tacRow = '';
+  if (tac) {
+    const tacModel = v?.tacData?.modelHint ?? '';
+    tacRow = `<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+      <span style="color:var(--muted);font-size:11px;width:80px;flex-shrink:0">TAC</span>
+      <span style="font-family:monospace;font-size:12px;color:var(--muted)">${esc(tac)}</span>
+      ${tacModel ? `<span style="font-size:12px;color:#cbd5e1">→ ${esc(tacModel)}</span>` : ''}
+      ${mfrKnown ? `<span class="badge badge-blue" style="margin-left:2px">${esc(manufacturer)}</span>` : `<span class="badge badge-gray" title="Skonfiguruj IMEI_INFO_API_KEY w .env dla pełnych danych">? Nieznany TAC</span>`}
+    </div>`;
+  }
+
+  // Data from listing row (storage + color)
+  let listingDataRow = '';
+  if (capacity || color) {
+    const parts = [];
+    if (capacity) parts.push(`Pojemność: <strong>${esc(capacity)}</strong>`);
+    if (color)    parts.push(`Kolor: <strong>${esc(color)}</strong>`);
+    listingDataRow = `<div style="display:flex;align-items:flex-start;gap:6px;margin-bottom:4px">
+      <span style="color:var(--muted);font-size:11px;width:80px;flex-shrink:0">Z ogłoszenia</span>
+      <span style="font-size:12px;color:#cbd5e1">${parts.join(' &nbsp;·&nbsp; ')}</span>
+    </div>`;
+  }
+
+  // Production date
+  let prodRow = '';
+  const ds = v?.decodedSerial;
+  if (ds?.manufactureYear) {
+    const prod = `${ds.manufactureYear}${ds.manufactureWeek ? `, tydzień ${ds.manufactureWeek}` : ''}`;
+    prodRow = `<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+      <span style="color:var(--muted);font-size:11px;width:80px;flex-shrink:0">Produkcja</span>
+      <span style="font-size:12px">${esc(prod)}</span>
+    </div>`;
+  }
+
+  // Apple data badges
+  const ap = v?.appleData;
+
+  let coverageBadge = '';
+  if (ap?.coverageEndDate) {
+    const expired = new Date(ap.coverageEndDate) < new Date();
+    coverageBadge = expired
+      ? `<span class="badge badge-gray">Gwarancja wygasła ${esc(ap.coverageEndDate)}</span>`
+      : `<span class="badge badge-green">Gwarancja do ${esc(ap.coverageEndDate)}</span>`;
+  }
+  const findMyBadge = ap?.findMyStatus === 'ON'
+    ? '<span class="badge badge-red">⚠ Find My: WŁĄCZONY</span>'
+    : ap?.findMyStatus === 'OFF' ? '<span class="badge badge-green">Find My: wyłączony</span>' : '';
+  const simBadge = ap?.simLockStatus === 'Locked'
+    ? `<span class="badge badge-yellow">SIM Lock: ${esc(ap.carrier ?? 'operator')}</span>`
+    : ap?.simLockStatus === 'Unlocked' ? '<span class="badge badge-green">Bez simlocka</span>' : '';
+  const blacklistBadge = v?.imeiInfoData?.blacklisted === true
+    ? '<span class="badge badge-red">⛔ BLACKLISTED</span>'
+    : v?.imeiInfoData?.blacklisted === false ? '<span class="badge badge-green">Blacklist: OK</span>' : '';
+
+  const badgeRow = [coverageBadge, findMyBadge, simBadge, blacklistBadge].filter(Boolean).join('');
+
+  // External check links (manual verification)
+  const externalLinks = [];
+  if (r.imei) {
+    externalLinks.push(`<a href="https://www.imeicheck.com/?imei=${esc(r.imei)}" target="_blank" style="display:inline-flex;align-items:center;gap:4px;padding:5px 10px;background:#1e2d3a;border:1px solid #2d4a5e;border-radius:6px;color:#7dd3fc;font-size:11px;text-decoration:none">🔍 IMEICheck.com</a>`);
+    externalLinks.push(`<a href="https://www.imei.info/?imei=${esc(r.imei)}" target="_blank" style="display:inline-flex;align-items:center;gap:4px;padding:5px 10px;background:#1e2d3a;border:1px solid #2d4a5e;border-radius:6px;color:#7dd3fc;font-size:11px;text-decoration:none">🔍 IMEI.info</a>`);
+  }
+  if (r.serial) {
+    externalLinks.push(`<a href="https://checkcoverage.apple.com/" target="_blank" style="display:inline-flex;align-items:center;gap:4px;padding:5px 10px;background:#1e2d3a;border:1px solid #2d4a5e;border-radius:6px;color:#7dd3fc;font-size:11px;text-decoration:none">🍎 Apple Coverage</a>`);
+  }
+  const externalSection = externalLinks.length
+    ? `<div style="margin-top:10px">
+        <div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px">Sprawdź online (ręcznie)</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">${externalLinks.join('')}</div>
+       </div>`
+    : '';
+
+  // Discrepancies
+  const discHTML = discrepancies.length
+    ? `<div style="margin-top:10px;padding:10px;background:#3f0f0f;border:1px solid #7f1d1d;border-radius:8px">
+        <div style="color:#fca5a5;font-size:11px;font-weight:700;margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px">⚠ Niespójności wykryte</div>
+        ${discrepancies.map(d => `<div style="color:#fca5a5;font-size:12px;margin-bottom:2px">• ${esc(d)}</div>`).join('')}
+       </div>`
+    : '';
+
+  // Data source legend
+  const sourceInfo = [];
+  if (v?.tacData?.modelHint) sourceInfo.push('<span style="color:#64748b;font-size:10px">Model: z TAC (IMEI)</span>');
+  if (capacity || color)     sourceInfo.push('<span style="color:#64748b;font-size:10px">Poj./Kolor: z tytułu ogłoszenia</span>');
+  if (v?.decodedSerial?.manufactureYear) sourceInfo.push('<span style="color:#64748b;font-size:10px">Data prod.: z numeru seryjnego</span>');
+  const sourceLine = sourceInfo.length
+    ? `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px">${sourceInfo.join('')}</div>`
+    : '';
+
+  // Listing description snippet
+  const descSnippet = r.listingDescription
+    ? `<div style="margin-top:8px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
+        <div style="color:var(--muted);font-size:10px;margin-bottom:3px;text-transform:uppercase;letter-spacing:.4px">Opis ogłoszenia</div>
+        <div style="font-size:11px;color:var(--muted);line-height:1.4">${esc(r.listingDescription.slice(0, 300))}${r.listingDescription.length > 300 ? '…' : ''}</div>
+       </div>`
+    : '';
+
+  return `<div style="background:var(--surface);border:1px solid ${hasIssues ? '#7f1d1d' : 'var(--border)'};border-radius:12px;padding:16px;margin-bottom:12px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:16px;margin-bottom:4px">${model ? esc(model) : (r.serial ? esc(r.serial) : (r.imei ? esc(r.imei) : '—'))}</div>
+        ${subtitleParts.length ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px">${subtitleParts.join('')}</div>` : ''}
+        ${r.listingTitle ? `<div style="color:var(--muted);font-size:11px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.listingTitle)}</div>` : ''}
+        ${r.listingUrl ? `<a href="${esc(r.listingUrl)}" target="_blank" style="color:var(--blue);font-size:11px">Otwórz ogłoszenie →</a>` : ''}
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0;margin-left:8px">
+        <button class="btn btn-ghost btn-sm" onclick="reverifyImei('${r.id}')">↻ Odśwież</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteImeiRecord('${r.id}')">Usuń</button>
+      </div>
+    </div>
+
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px">
+      ${imeiRow}${serialRow}${tacRow}${listingDataRow}${prodRow}${sourceLine}
+    </div>
+
+    ${badgeRow ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">${badgeRow}</div>` : ''}
+    ${externalSection}
+    ${discHTML}
+    ${descSnippet}
+
+    ${!v ? `<div style="color:var(--muted);font-size:11px;margin-top:6px">Weryfikacja w toku…</div>` : `<div style="color:var(--muted);font-size:10px;margin-top:8px">Zweryfikowano: ${new Date(v.verifiedAt).toLocaleString('pl-PL')}</div>`}
+  </div>`;
+}
+
+async function openImeiVerification(dealId) {
+  const deal = deals.find(d => d.id === dealId);
+  if (!deal) return;
+  switchTab('imei');
+  const urlEl    = document.getElementById('imei-listing-url');
+  const titleEl  = document.getElementById('imei-listing-title');
+  const imeiEl   = document.getElementById('imei-input');
+  const serialEl = document.getElementById('serial-input');
+  urlEl.value   = deal.listing.url ?? '';
+  titleEl.value = deal.listing.title ?? '';
+  // Pre-fill serial/IMEI if extracted by deal analysis
+  if (deal.analysis?.serialNumber) {
+    const sn = deal.analysis.serialNumber.replace(/\s/g, '');
+    if (/^\d{15}$/.test(sn)) imeiEl.value = sn;
+    else serialEl.value = sn;
+  }
+  // Trigger auto-fetch
+  if (urlEl.value) urlEl.dispatchEvent(new Event('blur'));
+  window.scrollTo(0, 0);
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────
+
+async function init() {
+  await Promise.all([refreshItems(), refreshDeals()]);
+  // Auto-refresh every 60 seconds
+  setInterval(async () => {
+    await Promise.all([refreshItems(), refreshDeals()]);
+  }, 60_000);
+}
+
+init();
+</script>
+</body>
+</html>
