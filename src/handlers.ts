@@ -22,7 +22,7 @@ import { scrapeListings } from './scraper.js';
 import type { MonitoredItem, Deal, DealQuality, HandlerResult, OlxListing, ImeiRecord } from './types.js';
 import { runVerification, fetchOlxListing } from './imei-checker.js';
 import { computeSnapshot } from './market/market-scanner.js';
-import { getSnapshot } from './market/snapshot-store.js';
+import { findSnapshot } from './market/snapshot-store.js';
 
 const DEFAULT_INTERVAL = Number(process.env.OLX_CHECK_INTERVAL ?? 15);
 
@@ -144,8 +144,10 @@ export function handleGetDeals(): HandlerResult {
     .sort((a, b) => new Date(b.foundAt).getTime() - new Date(a.foundAt).getTime())
     .map(deal => {
       if (!deal.configKey) return { ...deal, liveDataConfidence: 'no_data' as const };
-      const condition = itemsList.find(i => i.id === deal.itemId)?.condition ?? 'all';
-      const snap = getSnapshot(deal.configKey, condition);
+      // Use monitor condition for lookup, but fall back to compatible conditions
+      // (snapshot may be stored under 'used'/'new' while monitor condition is 'all')
+      const monitorCondition = itemsList.find(i => i.id === deal.itemId)?.condition ?? 'all';
+      const snap = findSnapshot(deal.configKey, monitorCondition);
       if (!snap) return { ...deal, liveMarketMedian: undefined, liveDataConfidence: 'no_data' as const };
       const discount = (snap.stats.median - deal.listing.price) / snap.stats.median;
       return {
@@ -193,7 +195,7 @@ export function handleUpdateDeal(id: string, body: unknown): HandlerResult {
   // Save immutable market median at time of purchase
   if (b.contactStatus === 'purchased' && updated.configKey) {
     const condition = loadItems().find(i => i.id === updated.itemId)?.condition ?? 'all';
-    const snap = getSnapshot(updated.configKey, condition);
+    const snap = findSnapshot(updated.configKey, condition);
     updated.marketMedianAtPurchase =
       snap?.stats.median ?? updated.liveMarketMedian ?? updated.marketMedian ?? 0;
   }

@@ -810,7 +810,9 @@ const QUALITY_ORDER_FILTER = ['normal', 'good', 'very_good', 'extreme'];
 function qualityFilter(d) {
   const minQ = document.getElementById('filter-quality').value;
   if (!minQ) return true;
-  const dRank = QUALITY_ORDER_FILTER.indexOf(d.dealQuality ?? 'normal');
+  // Use live quality if available, fall back to stored dealQuality
+  const effectiveQuality = d.liveQuality ?? d.dealQuality ?? 'normal';
+  const dRank = QUALITY_ORDER_FILTER.indexOf(effectiveQuality);
   const minRank = QUALITY_ORDER_FILTER.indexOf(minQ);
   return dRank >= minRank;
 }
@@ -843,9 +845,10 @@ function priceColor(price, threshold) {
 }
 
 const QUALITY_CFG = {
-  good:      { cls: 'badge-good',      label: '🟡 Good Deal'      },
-  very_good: { cls: 'badge-very-good', label: '🔥 Very Good Deal' },
-  extreme:   { cls: 'badge-extreme',   label: '🚨 Extreme Deal'   },
+  normal:    { cls: 'badge-gray',      label: 'Fair Deal'          },
+  good:      { cls: 'badge-good',      label: '🟡 Good Deal'       },
+  very_good: { cls: 'badge-very-good', label: '🔥 Very Good Deal'  },
+  extreme:   { cls: 'badge-extreme',   label: '🚨 Extreme Deal'    },
 };
 
 function dealRow(deal) {
@@ -858,23 +861,29 @@ function dealRow(deal) {
   const confidence = deal.liveDataConfidence ?? 'no_data';
 
   const hasMarket = median > 0;
+  const noMarketData = !hasMarket || confidence === 'no_data';
   const pClass = savings >= 15 ? 'price-green' : savings >= 5 ? 'price-yellow' : '';
 
-  // Deal quality badge
-  const qCfg = QUALITY_CFG[quality];
+  // Deal quality badge — only show when we have real market data
+  const qCfg = !noMarketData ? QUALITY_CFG[quality] : undefined;
   const qualityBadge = qCfg
-    ? `<span class="badge ${qCfg.cls}">${qCfg.label} −${savings}%</span>`
+    ? `<span class="badge ${qCfg.cls}">${qCfg.label}${savings > 0 ? ' −' + savings + '%' : ''}</span>`
     : '';
 
-  // Confidence warning badge
-  const confidenceBadge = (confidence === 'no_data' || confidence === 'low')
-    ? `<span class="badge badge-gray" title="Brak aktualnych danych rynkowych – mediany mogą być nieaktualne">${confidence === 'no_data' ? '⚠ brak danych' : '⚠ niski data confidence'}</span>`
+  // No-data badge — shown when snapshot is missing
+  const noDataBadge = noMarketData
+    ? `<span class="badge badge-gray" title="Brak snapshotu rynkowego dla tego wariantu">⚠ Brak danych rynkowych</span>`
+    : '';
+
+  // Low confidence warning (separate from no-data)
+  const lowConfBadge = (!noMarketData && confidence === 'low')
+    ? `<span class="badge badge-gray" title="Mała próbka rynkowa – mediana może być niedokładna">⚠ niska pewność danych</span>`
     : '';
 
   // Etykieta zniżki
-  const savingsLabel = hasMarket
+  const savingsLabel = hasMarket && !noMarketData
     ? `−${savings}% od mediany ${median.toLocaleString('pl-PL')} zł`
-    : `Brak mediany rynkowej`;
+    : `Brak danych rynkowych`;
 
   const riskBadge = {
     low: '<span class="badge badge-green">low risk</span>',
@@ -916,7 +925,8 @@ function dealRow(deal) {
       <div style="flex:1;min-width:0">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           ${qualityBadge}
-          ${confidenceBadge}
+          ${noDataBadge}
+          ${lowConfBadge}
           <a class="deal-title" href="${esc(deal.listing.url)}" target="_blank">${esc(deal.listing.title)}</a>
           ${riskBadge}
           ${a.hasProofOfPurchase ? '<span class="badge badge-green">paragon</span>' : ''}

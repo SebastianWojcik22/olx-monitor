@@ -112,7 +112,7 @@ export async function checkItem(item: MonitoredItem): Promise<number> {
         foundAt: new Date().toISOString(),
         contactStatus: 'none',
         dismissed: false,
-        configKey: score.configKey,
+        configKey: score.configKey ?? listing.configKey,
         dealScore: score.discount,
         dealQuality: score.quality,
         marketMedian: score.marketMedian,

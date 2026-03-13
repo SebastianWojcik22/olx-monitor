@@ -7,7 +7,7 @@
 
 import { parseConfig, buildVariantQuery } from './config-parser.js';
 import { getPriceStats } from './price-cache.js';
-import { getSnapshot } from './market/snapshot-store.js';
+import { findSnapshot } from './market/snapshot-store.js';
 import type { OlxListing, DealQuality, NormalizedListing, DealScore as NewDealScore } from './types.js';
 
 export type { DealQuality };
@@ -130,7 +130,7 @@ export async function scoreDealFromNormalized(
   if (!conditionCompatible) return noScore();
   if (!listing.configKey) return noScore();
 
-  const snap = getSnapshot(listing.configKey, condition);
+  const snap = findSnapshot(listing.configKey, condition);
   if (!snap || snap.stats.median <= 0) return noScore();
 
   const discount = (snap.stats.median - listing.price) / snap.stats.median;

@@ -96,3 +96,29 @@ export function getAllSnapshots(): MarketSnapshot[] {
   ensureDir();
   return Array.from(cache.values());
 }
+
+/**
+ * Find the best available snapshot for a configKey, with condition fallback.
+ *
+ * Condition compatibility matrix:
+ *   monitor 'all'  → try: all, used, new
+ *   monitor 'used' → try: used, all
+ *   monitor 'new'  → try: new, all
+ *   listing 'unknown' → try: all
+ *
+ * This is the single source of truth for condition-fallback logic.
+ * Use this instead of getSnapshot() whenever you need best-effort lookup.
+ */
+export function findSnapshot(configKey: string, condition: string): MarketSnapshot | undefined {
+  const fallbackOrder: string[] =
+    condition === 'all'     ? ['all', 'used', 'new'] :
+    condition === 'used'    ? ['used', 'all'] :
+    condition === 'new'     ? ['new', 'all'] :
+    /* unknown */             ['all'];
+
+  for (const c of fallbackOrder) {
+    const snap = getSnapshot(configKey, c);
+    if (snap && snap.stats.median > 0) return snap;
+  }
+  return undefined;
+}
